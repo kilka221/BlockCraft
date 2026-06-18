@@ -1,0 +1,33 @@
+1182:                        allEdges.push({ 
+1190:                            allEdges.push({ points: [p, {x: cx, y: mergeY}], noArrow: true });
+1192:                            allEdges.push({ points: [p, {x: p.x, y: mergeY}, {x: cx, y: mergeY}], noArrow: true });
+1197:                allEdges.push({ 
+1309:                            allEdges.push({ 
+1315:                            allEdges.push({ points: [pt, {x: pt.x, y: commonY}], ...extra, noArrow: true });
+1326:                            allEdges.push({ 
+1332:                            allEdges.push({ points: [pt, {x: pt.x, y: commonY}], ...extra, noArrow: true });
+1342:                             allEdges.push({ 
+1347:                             allEdges.push({ points: [pt, {x: pt.x, y: commonY}, {x: cx, y: commonY}], ...extra });
+1354:                             allEdges.push({ 
+1359:                             allEdges.push({ points: [pt, {x: pt.x, y: commonY}, {x: cx, y: commonY}], ...extra });
+1382:                allEdges.push({ points: [{x: cx, y: currentY + h/2}, {x: cx, y: lineY}], noArrow: true });
+1386:                allEdges.push({ points: [{x: minBranchCx, y: lineY}, {x: maxBranchCx, y: lineY}], noArrow: true });
+1395:                    allEdges.push({ 
+1415:                allEdges.push({ 
+1443:                        allEdges.push({ 
+1449:                        allEdges.push({ points: [pt, {x: pt.x, y: commonY}], noArrow: true });
+1454:                    allEdges.push({ points: [{x: minEndCx, y: commonY}, {x: maxEndCx, y: commonY}], noArrow: true});
+1500:                         allEdges.push({ 
+1507:                             allEdges.push({ points: [p, {x: actEndCx, y: mergeY}], noArrow: true });
+1509:                             allEdges.push({ points: [p, {x: p.x, y: mergeY}, {x: actEndCx, y: mergeY}], noArrow: true });
+1520:                allEdges.push({ 
+1585:                        allEdges.push({ 
+1589:                        allEdges.push({ points: [{x: cx, y: mergeY}, {x: cx, y: endY - endH/2}] });
+1592:                            allEdges.push({ points: [p, {x: cx, y: endY - endH/2}] });
+1594:                            allEdges.push({ points: [p, {x: p.x, y: mergeY}, {x: cx, y: mergeY}], noArrow: true });
+1595:                            allEdges.push({ points: [{x: cx, y: mergeY}, {x: cx, y: endY - endH/2}] });
+1657:                 allEdges.push({ 
+1662:                 allEdges.push({ points: [{x: endCx, y: mergeY}, targetPoint] });
+1665:                     allEdges.push({ points: [p, targetPoint] });
+1667:                     allEdges.push({ points: [p, {x: p.x, y: mergeY}, {x: endCx, y: mergeY}], noArrow: true });
+1668:                     allEdges.push({ points: [{x: endCx, y: mergeY}, targetPoint] });

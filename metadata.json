@@ -1,0 +1,6 @@
+{
+  "name": "BlockCraft",
+  "description": "Генератор блок-схем по ГОСТ. Визуализатор кода на Python, C++ с прозрачным фоном и экспортом.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

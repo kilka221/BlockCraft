@@ -1,0 +1,70 @@
+[
+  {
+    "type": "match",
+    "id": "node-1",
+    "condition": "choice",
+    "cases": [
+      {
+        "condition": "1",
+        "block": [
+          {
+            "text": "val = ui.get_string(\"Новое название\"); item['name'] = val if val else item['name']"
+          }
+        ]
+      },
+      {
+        "condition": "2",
+        "block": [
+          {
+            "text": "val = ui.get_string(\"Новый материал\"); item['material'] = val if val else item['material']"
+          }
+        ]
+      },
+      {
+        "condition": "3",
+        "block": [
+          {
+            "text": "val = ui.get_float(\"Новая длина\", min_val=0.001); item['length'] = val if val else item['length']"
+          }
+        ]
+      },
+      {
+        "condition": "4",
+        "block": [
+          {
+            "text": "val = ui.get_float(\"Новая ширина\", min_val=0.001); item['width'] = val if val else item['width']"
+          }
+        ]
+      },
+      {
+        "condition": "5",
+        "block": [
+          {
+            "text": "val = ui.get_float(\"Новая высота\", min_val=0.001); item['height'] = val if val else item['height']"
+          }
+        ]
+      },
+      {
+        "condition": "6",
+        "block": [
+          {
+            "text": "val = ui.get_float(\"Новый уд. вес\", min_val=0.1); item['specific_weight'] = val if val else item['specific_weight']"
+          }
+        ]
+      },
+      {
+        "condition": "7",
+        "block": [
+          {
+            "text": "val = ui.get_int(\"Новое кол-во\", min_val=0); item['quantity'] = val if val is not None else item['quantity']"
+          }
+        ]
+      }
+    ],
+    "defaultBlock": [
+      {
+        "text": "ui.print_error(\"Неверный пункт.\"); return"
+      }
+    ]
+  }
+]
