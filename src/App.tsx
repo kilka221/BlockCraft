@@ -298,37 +298,7 @@ if __name__ == "__main__":
     main()
 `;
 
-const DEFAULT_CPP_CODE = `#include <iostream>
-using namespace std;
-
-int main() {
-    cout << "Решение квадратного уравнения" << endl;
-    int a, b, c;
-    cout << "Введите a: ";
-    cin >> a;
-    cout << "Введите b: ";
-    cin >> b;
-    cout << "Введите c: ";
-    cin >> c;
-    
-    int D = b*b - 4*a*c;
-    
-    if (D > 0) {
-        float x1 = (-b + sqrt(D)) / (2*a);
-        float x2 = (-b - sqrt(D)) / (2*a);
-        cout << "Два корня:" << endl;
-        cout << x1 << ", " << x2 << endl;
-    } else if (D == 0) {
-        float x = -b / (2*a);
-        cout << "Один корень:" << endl;
-        cout << x << endl;
-    } else {
-        cout << "Нет действительных корней" << endl;
-    }
-    
-    return 0;
-}
-`;
+const DEFAULT_CPP_CODE = "";
 
 interface LogicalLine {
     text: string;
@@ -2306,7 +2276,10 @@ function GostShape({ node, highlighted = false, fontFamily = 'monospace', theme 
 }
 
 export default function App() {
-  const [code, setCode] = useState(() => localStorage.getItem('blockcraft_code') || DEFAULT_CODE);
+  const [code, setCode] = useState(() => {
+     const c = localStorage.getItem('blockcraft_code');
+     return c !== null ? c : "";
+  });
   const [hoveredLineIndex, setHoveredLineIndex] = useState<number | null>(null);
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
   const [theme, setTheme] = useState<'light'|'dark'>(() => (localStorage.getItem('blockcraft_theme') as 'light'|'dark') || 'light');
@@ -2894,8 +2867,6 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                             value={language} onChange={(e) => {
                                 const newLang = e.target.value;
                                 setLanguage(newLang);
-                                if (newLang === 'cpp' && code === DEFAULT_CODE) setCode(DEFAULT_CPP_CODE);
-                                else if (newLang === 'python' && code === DEFAULT_CPP_CODE) setCode(DEFAULT_CODE);
                             }}>
                         <option value="python">Python</option>
                         <option value="cpp">C++</option>
@@ -2909,7 +2880,20 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                 </div>
               </div>
               <div id="code-editor-scroller" className="flex-grow overflow-auto bg-[#fafafa] dark:bg-[#18181A] relative transition-colors duration-300">
-                <div className="w-full min-h-full p-4 flex flex-row items-start">
+                <div 
+                    className="w-full min-h-full p-4 flex flex-row items-start cursor-text"
+                    onClick={(e) => {
+                        // Only focus if clicking the empty space or container, not the editor itself or line numbers
+                        if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('flex-grow')) {
+                            const textarea = document.querySelector('#code-editor-scroller textarea') as HTMLTextAreaElement;
+                            if (textarea) {
+                                textarea.focus();
+                                // Move cursor to the end
+                                textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+                            }
+                        }
+                    }}
+                >
                     <style>{`
                         .npm__react-simple-code-editor__textarea { outline: none !important; white-space: pre !important; }
                         pre { white-space: pre !important; }
@@ -2941,9 +2925,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                             onValueChange={code => setCode(code)}
                             highlight={code => {
                                 const grammar = language === 'cpp' ? Prism.languages.cpp : Prism.languages.python;
-                                return (
-                                  <div dangerouslySetInnerHTML={{ __html: grammar ? Prism.highlight(code, grammar, language) : code }} className="pointer-events-none" />
-                                );
+                                return grammar ? Prism.highlight(code, grammar, language) : code;
                             }}
                             padding={0}
                             className="font-mono text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-300 transition-colors duration-300"
