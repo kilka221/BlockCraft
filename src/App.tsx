@@ -879,10 +879,18 @@ export function parsePythonSourceWhole(code: string) {
         let line = lines[i];
         if (!isCodeLine(line)) { i++; continue; }
         
+        let trimmed = line.trim();
         let indent = getIndent(line);
-        if (indent === 0 && line.trim().startsWith('def ')) {
-            let funcNameMatch = line.trim().match(/def\s+([a-zA-Z0-9_]+)\s*\((.*?)\)/);
+        if (trimmed.startsWith('class ')) {
+             // Ignore the class declaration itself, but continue so we can parse its methods
+             i++;
+             continue;
+        }
+
+        if (trimmed.startsWith('def ')) {
+            let funcNameMatch = trimmed.match(/def\s+([a-zA-Z0-9_]+)\s*\((.*?)\)/);
             let funcName = funcNameMatch ? `${funcNameMatch[1]}(${funcNameMatch[2]})` : 'func';
+            let defIndent = indent;
             
             let funcLines = [];
             let funcLinesIndices = [];
@@ -894,14 +902,14 @@ export function parsePythonSourceWhole(code: string) {
                     i++;
                     continue;
                 }
-                if (getIndent(lines[i]) === 0) break;
+                if (getIndent(lines[i]) <= defIndent) break;
                 funcLines.push(lines[i]);
                 funcLinesIndices.push(logicalLineIndices[i]);
                 i++;
             }
             
             let firstCode = funcLines.find(l => isCodeLine(l));
-            let expectedIdent = firstCode ? getIndent(firstCode) : 4;
+            let expectedIdent = firstCode ? getIndent(firstCode) : defIndent + 4;
             let funcSimpleName = funcNameMatch ? funcNameMatch[1] : 'func';
             let ast = parseLinesAsBlock(funcLines, expectedIdent, funcSimpleName, funcLinesIndices);
             functionsAst.push({ name: funcName, ast });
@@ -1145,23 +1153,12 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
             let pageIndex = Math.floor(currentY / PAGE_LAYOUT_H);
             let pageRemaining = (pageIndex + 1) * PAGE_LAYOUT_H - currentY;
             
-            let forcedPushNext = false;
-            // To ensure every page has at least 2 blocks ("на одной странице должно быть минимум 2 блока"),
-            // when we are at the second-to-last node of a sequence, if the very last node will not fit
-            // on the current page, we proactively push this second-to-last node to the next page now.
-            if (i === nodes.length - 2 && nextNode) {
-                let nodeBottom = currentY + h/2;
-                let nextNodeTopY = nodeBottom + Y_MARGIN;
-                let nextNodePageRemaining = (pageIndex + 1) * PAGE_LAYOUT_H - nextNodeTopY;
-                if (nextNodeTopY >= (pageIndex + 1) * PAGE_LAYOUT_H || nextH > nextNodePageRemaining - 60) {
-                    currentY = (pageIndex + 1) * PAGE_LAYOUT_H + 60 + h/2;
-                    pageIndex = Math.floor(currentY / PAGE_LAYOUT_H);
-                    pageRemaining = (pageIndex + 1) * PAGE_LAYOUT_H - currentY;
-                    forcedPushNext = true;
-                }
-            }
-
-            if (!forcedPushNext) {
+            // "запрети чтобы на странице был один блок ... пусть лучше предыдущая страница будет длиннее"
+            // If we are at the root level and within the last 4 nodes, skip all page breaking
+            // to allow the current page to just be longer.
+            const allowPagination = !(isRoot && nodes.length - i <= 4);
+            
+            if (allowPagination) {
                 // if even the node shape itself doesn't fit, push it to next page
                 if (h > pageRemaining - 60) {
                     currentY = (pageIndex + 1) * PAGE_LAYOUT_H + 60 + h/2;
@@ -1175,16 +1172,16 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
                         pageRemaining = (pageIndex + 1) * PAGE_LAYOUT_H - currentY;
                     }
                 }
-            }
-            
-            // if the block as a whole doesn't fit and it's large, consider pushing it completely to the next page
-            const isComplex = ['if', 'while', 'for', 'match'].includes(node.type);
-            if (isComplex) {
-                let estH = estimateHeight([node]);
-                // If it doesn't fit, but we are near the bottom of the page (e.g. less than 450px left), 
-                // OR it's a huge block but we'd rather it starts clean.
-                if (estH > pageRemaining && pageRemaining < 450) {
-                    currentY = (pageIndex + 1) * PAGE_LAYOUT_H + 60 + h/2;
+                
+                // if the block as a whole doesn't fit and it's large, consider pushing it completely to the next page
+                const isComplex = ['if', 'while', 'for', 'match'].includes(node.type);
+                if (isComplex) {
+                    let estH = estimateHeight([node]);
+                    // If it doesn't fit, but we are near the bottom of the page (e.g. less than 450px left), 
+                    // OR it's a huge block but we'd rather it starts clean.
+                    if (estH > pageRemaining && pageRemaining < 450) {
+                        currentY = (pageIndex + 1) * PAGE_LAYOUT_H + 60 + h/2;
+                    }
                 }
             }
 
@@ -1544,7 +1541,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
                 for (let p of bodyEnds) {
                     if (p.isContinue) {
                          allEdges.push({ 
-                             points: [p.from, {x: rightCorridor, y: p.from.y}, {x: rightCorridor, y: mergeY}, {x: actEndCx, y: mergeY}], 
+                             points: [p.from, {x: p.from.x, y: p.from.y + 15}, {x: rightCorridor, y: p.from.y + 15}, {x: rightCorridor, y: mergeY}, {x: actEndCx, y: mergeY}], 
                              noArrow: true 
                          });
                     } else if (p.from) {
@@ -1612,7 +1609,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
                 let breakY = mergeY + 15;
                 for (let brk of bBreaks) {
                     allEdges.push({
-                        points: [brk, {x: brk.x, y: breakY}, {x: falsePathLimit, y: breakY}, {x: falsePathLimit, y: nextY}],
+                        points: [brk, {x: brk.x, y: brk.y + 15}, {x: falsePathLimit, y: brk.y + 15}, {x: falsePathLimit, y: nextY}],
                         noArrow: true
                     });
                     inPts.push({
@@ -1658,7 +1655,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
                 let contY = currentY + 15;
                 for (let c of bContinues) {
                     allEdges.push({
-                        points: [c, {x: rightCorridor, y: c.y}, {x: rightCorridor, y: contY}, {x: cx, y: contY}],
+                        points: [c, {x: c.x, y: c.y + 15}, {x: rightCorridor, y: c.y + 15}, {x: rightCorridor, y: contY}, {x: cx, y: contY}],
                         noArrow: true
                     });
                     outPts.push({
@@ -1674,35 +1671,41 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
                 // Calculate next valid position for end element based on incoming lines
                 let endY = mergeY + 15 + endH/2;
                 
+                let mergedPaths = false;
                 for (let p of outPts) {
                     if ((p as any).from) {
                         const px = (p as any).limitX || p.x;
                         allEdges.push({ 
-                            points: [(p as any).from, {x: px, y: (p as any).from.y}, {x: px, y: endY + endH/2 + 15}], 
+                            points: [(p as any).from, {x: px, y: (p as any).from.y}, {x: px, y: mergeY}, {x: cx, y: mergeY}], 
                             noArrow: true 
                         });
-                        inPts.push({ x: cx, y: endY + endH/2 + 15, from: {x: px, y: endY + endH/2 + 15}, limitX: px } as any);
+                        mergedPaths = true;
                     } else {
                         if (Math.abs(p.x - cx) >= 1) {
-                            allEdges.push({ points: [p, {x: p.x, y: endY + endH/2 + 15}], noArrow: true });
-                            inPts.push({ x: cx, y: endY + endH/2 + 15, from: {x: p.x, y: endY + endH/2 + 15}, limitX: p.x } as any);
+                            allEdges.push({ points: [p, {x: p.x, y: mergeY}, {x: cx, y: mergeY}], noArrow: true });
+                            mergedPaths = true;
                         } else {
-                            // Straight down? Not possible for false branch anyway
-                            allEdges.push({ points: [p, {x: cx, y: endY + endH/2 + 15}], noArrow: true });
-                            inPts.push({ x: cx, y: endY + endH/2 + 15 });
+                            allEdges.push({ points: [p, {x: cx, y: mergeY}], noArrow: true });
+                            mergedPaths = true;
                         }
                     }
                 }
                 
+                if (mergedPaths) {
+                    allEdges.push({
+                        points: [{x: cx, y: mergeY}, {x: cx, y: endY - endH/2}]
+                    });
+                }
+                
                 allNodes.push({ id: node.id + '_end', type: 'loop_end', text: endText, x: cx, y: endY, height: endH });
                 
-                inPts = [{ x: cx, y: endY + endH/2 }];
+                inPts = [{ x: cx, y: endY + endH/2, from: {x: cx, y: endY + endH/2} } as any];
                 
                 let breakPathLimit = cx + Math.max(node.rightW || NODE_WIDTH, NODE_WIDTH * 2) - X_SEP/2 + 40;
                 let bBrkY = mergeY + 15;
                 for (let brk of bBreaks) {
                     allEdges.push({
-                        points: [brk, {x: breakPathLimit, y: brk.y}, {x: breakPathLimit, y: endY + endH/2 + 15}],
+                        points: [brk, {x: brk.x, y: brk.y + 15}, {x: breakPathLimit, y: brk.y + 15}, {x: breakPathLimit, y: endY + endH/2 + 15}],
                         noArrow: true
                     });
                     inPts.push({
@@ -1903,9 +1906,18 @@ ${cleanTitle}`;
         let jumpCounter = 65;
         let jumpMap = new Map<string, string>();
 
+        if (maxS > 0) {
+            let lastPageNodes = allNodes.filter(n => n.y >= maxS * PAGE_H);
+            // If the last page has 4 or fewer nodes (including structural/end nodes),
+            // it's considered "too small". So we just merge it into the previous page.
+            if (lastPageNodes.length <= 4) {
+                 maxS--;
+            }
+        }
+
         for (let s = 0; s <= maxS; s++) {
             let yMin = s * PAGE_H;
-            let yMax = (s+1) * PAGE_H;
+            let yMax = (s === maxS) ? Infinity : (s+1) * PAGE_H;
             
             let pageNodesList = allNodes.filter(n => n.y >= yMin && n.y < yMax);
 
@@ -2690,9 +2702,9 @@ const downloadDrawio = (title: string, fontFamily: string) => {
         } else if (node.type === 'decision') {
             style = `rhombus;whiteSpace=wrap;html=1;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
         } else if (node.type === 'loop_begin') {
-            style = `shape=polygon;points=[[0.1,0],[0.9,0],[1,0.25],[1,1],[0,1],[0,0.25]];whiteSpace=wrap;html=1;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
+            style = `shape=loopLimit;whiteSpace=wrap;html=1;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
         } else if (node.type === 'loop_end') {
-            style = `shape=polygon;points=[[0,0],[1,0],[1,0.75],[0.9,1],[0.1,1],[0,0.75]];whiteSpace=wrap;html=1;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
+            style = `shape=loopLimit;whiteSpace=wrap;html=1;direction=west;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
         } else if (node.type === 'loop') {
             style = `shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
         } else if (node.type === 'subprogram') {
