@@ -540,7 +540,7 @@ export function parsePythonSourceWhole(code: string) {
     let lines = processedLogicalLines.map(l => l.text);
     let logicalLineIndices = processedLogicalLines.map(l => l.origIndex);
 
-    let functionsAst: {name: string, ast: ASTNode[]}[] = [];
+    let functionsAst: {name: string, returnType?: string, ast: ASTNode[]}[] = [];
     
     function getIndent(line: string) {
         const match = line.match(/^(\s*)/);
@@ -888,8 +888,9 @@ export function parsePythonSourceWhole(code: string) {
         }
 
         if (trimmed.startsWith('def ')) {
-            let funcNameMatch = trimmed.match(/def\s+([a-zA-Z0-9_]+)\s*\((.*?)\)/);
+            let funcNameMatch = trimmed.match(/def\s+([a-zA-Z0-9_]+)\s*\((.*?)\)(?:\s*->\s*(.*?))?:/);
             let funcName = funcNameMatch ? `${funcNameMatch[1]}(${funcNameMatch[2]})` : 'func';
+            let returnType = funcNameMatch && funcNameMatch[3] ? funcNameMatch[3].trim() : undefined;
             let defIndent = indent;
             
             let funcLines = [];
@@ -912,7 +913,7 @@ export function parsePythonSourceWhole(code: string) {
             let expectedIdent = firstCode ? getIndent(firstCode) : defIndent + 4;
             let funcSimpleName = funcNameMatch ? funcNameMatch[1] : 'func';
             let ast = parseLinesAsBlock(funcLines, expectedIdent, funcSimpleName, funcLinesIndices);
-            functionsAst.push({ name: funcName, ast });
+            functionsAst.push({ name: funcName, returnType, ast });
         } else {
             mainCodeLines.push({line, index: logicalLineIndices[i]});
             i++;
@@ -947,17 +948,17 @@ export function buildGraphs(code: string, language: string, activeOverrides: any
     let graphs = [];
     let idx = 0;
     if (parsed.main.length > 0) {
-        graphs.push(buildGraphForAst(parsed.main, 'Main', true, activeOverrides[idx] || {}));
+        graphs.push(buildGraphForAst(parsed.main, 'Main', undefined, true, activeOverrides[idx] || {}));
         idx++;
     }
     for (let f of parsed.functions) {
-        graphs.push(buildGraphForAst(f.ast, f.name, false, activeOverrides[idx] || {}));
+        graphs.push(buildGraphForAst(f.ast, f.name, f.returnType, false, activeOverrides[idx] || {}));
         idx++;
     }
     return graphs;
 }
 
-function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphOverrides: any = {}) {
+function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | undefined, isMain: boolean, graphOverrides: any = {}) {
     const NODE_WIDTH = 220;
     const X_SEP = 60;
     const Y_MARGIN = 20;
@@ -973,7 +974,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
             if (node.type === 'stmt' && node.kind === 'end') {
                 if (isMain) t = 'Конец';
                 else {
-                    t = `Выход из п/п\n${cleanTitle}`;
+                    t = `Выход из п/п\n${cleanTitle}` + (returnType ? ` (${returnType})` : ``);
                 }
             }
         }
@@ -1154,9 +1155,9 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
             let pageRemaining = (pageIndex + 1) * PAGE_LAYOUT_H - currentY;
             
             // "запрети чтобы на странице был один блок ... пусть лучше предыдущая страница будет длиннее"
-            // If we are at the root level and within the last 4 nodes, skip all page breaking
-            // to allow the current page to just be longer.
-            const allowPagination = !(isRoot && nodes.length - i <= 4);
+            // If we are at the root level and the rest of the nodes are small enough to just extend the page, skip page breaking.
+            let estRemaining = isRoot ? estimateHeight(nodes.slice(i)) : Infinity;
+            const allowPagination = !(isRoot && estRemaining < 800);
             
             if (allowPagination) {
                 // if even the node shape itself doesn't fit, push it to next page
@@ -1234,7 +1235,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
                     if (isMain) {
                         adjustedText = 'Конец';
                     } else {
-                        adjustedText = `Выход из п/п\n${cleanTitle}`;
+                        adjustedText = `Выход из п/п\n${cleanTitle}` + (returnType ? ` (${returnType})` : ``);
                     }
                 }
                 allNodes.push({ id: node.id, type: node.kind, text: adjustedText, x: cx, y: currentY, height: h, lineIndex: node.lineIndex });
@@ -1734,7 +1735,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
     const startY = 60;
     const startH = 64;
     
-    let startText = isMain ? 'Начало' : `Вход в п/п ${cleanTitle}`;
+    let startText = isMain ? 'Начало' : `Вход в п/п\n${title}`;
     allNodes.push({ id: 'start', type: 'start', text: startText, x: rootCx, y: startY, height: startH });
     let rootInPts = [{ x: rootCx, y: startY + startH/2 }];
     
@@ -1759,8 +1760,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, isMain: boolean, graphO
     let finalY = Math.max(maxYOfEnds, localColBottom, res.finalY) + 32;
 
     if (res.endPoints.length > 0) {
-        let endText = isMain ? 'Конец' : `Выход из п/п
-${cleanTitle}`;
+        let endText = isMain ? 'Конец' : `Выход из п/п\n${cleanTitle}` + (returnType ? ` (${returnType})` : ``);
         allNodes.push({ id: 'end', type: 'end', text: endText, x: endCx, y: finalY, height: 64 });
         
         const targetPoint = {x: endCx, y: finalY - 64/2};
@@ -1908,9 +1908,9 @@ ${cleanTitle}`;
 
         if (maxS > 0) {
             let lastPageNodes = allNodes.filter(n => n.y >= maxS * PAGE_H);
-            // If the last page has 4 or fewer nodes (including structural/end nodes),
-            // it's considered "too small". So we just merge it into the previous page.
-            if (lastPageNodes.length <= 4) {
+            let lastPageMaxY = lastPageNodes.length > 0 ? Math.max(...lastPageNodes.map(n => n.y)) : 0;
+            // Merge last page if it has few nodes or doesn't stretch too far down
+            if (lastPageNodes.length <= 8 || (lastPageMaxY - maxS * PAGE_H) < 800) {
                  maxS--;
             }
         }
@@ -2704,7 +2704,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
         } else if (node.type === 'loop_begin') {
             style = `shape=loopLimit;whiteSpace=wrap;html=1;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
         } else if (node.type === 'loop_end') {
-            style = `shape=loopLimit;whiteSpace=wrap;html=1;direction=west;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
+            style = `shape=loopLimit;whiteSpace=wrap;html=1;rotation=180;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
         } else if (node.type === 'loop') {
             style = `shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;strokeColor=#18181b;fillColor=#ffffff;strokeWidth=1.5;fontFamily=${fontName};`;
         } else if (node.type === 'subprogram') {
