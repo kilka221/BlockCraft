@@ -648,9 +648,9 @@ export function parsePythonSourceWhole(code: string) {
                             else if (args.length === 2) condition = `${rangeMatch[1]} = ${mathify(args[0])}(1)${mathify(args[1])}`;
                             else if (args.length === 3) condition = `${rangeMatch[1]} = ${mathify(args[0])}(${mathify(args[2])})${mathify(args[1])}`;
                         } else if (enumMatch) {
-                            condition = `Для каждого ${enumMatch[1].trim()} в ${mathify(enumMatch[2].trim())} с нумерацией`;
+                            condition = `${enumMatch[1].trim()} из ${mathify(enumMatch[2].trim())}`;
                         } else if (inMatch) {
-                            condition = `Для каждого ${inMatch[1].trim()} в ${mathify(inMatch[2].trim())}`;
+                            condition = `${inMatch[1].trim()} из ${mathify(inMatch[2].trim())}`;
                         } else {
                             condition = mathify(condition);
                         }
@@ -666,6 +666,33 @@ export function parsePythonSourceWhole(code: string) {
                     } else {
                         statements.push({ type: 'while', id: `node-${idCounter++}`, condition, body, lineIndex: matchingIndex });
                     }
+                }
+                else if (text.startsWith('with ')) {
+                    let matchingIndex = myLinesIndices ? myLinesIndices[i] : undefined;
+                    let withMatch = text.match(/^with\s+open\((.*?)\)(?:\s+as\s+(.*?))?:/);
+                    if (!withMatch) withMatch = text.match(/^with\s+open\((.*?)\):/);
+                    
+                    let fileAction = 'чтения';
+                    let fileName = '...';
+                    if (withMatch) {
+                        let argsMatch = withMatch[1].split(',').map(s => s.trim());
+                        fileName = argsMatch[0];
+                        if (argsMatch.length > 1) {
+                            let mode = argsMatch[1];
+                            let isWrite = mode.includes('w') || mode.includes('a') || mode.includes('x');
+                            if (isWrite) fileAction = 'записи';
+                        }
+                    }
+                    i++;
+                    let body = parseBlockInternal(getNextIndent(i));
+                    statements.push({
+                        type: 'with',
+                        id: `node-${idCounter++}`,
+                        condition: `Открыть файл ${fileName} для ${fileAction}`,
+                        closeCondition: `Закрытие файла ${fileName}`,
+                        body: body,
+                        lineIndex: matchingIndex
+                    });
                 }
                 else if (text.startsWith('match ')) {
                     let matchVar = text.substring(6).trim().replace(/:$/, '');
@@ -717,19 +744,26 @@ export function parsePythonSourceWhole(code: string) {
                         }
                     } else if (text.includes('.write(') || text.includes('writer.writerow') || text.includes('writer.writerows')) {
                         kind = 'io';
-                        displayText = `Запись в файл`;
+                        const fileVarMatch = text.match(/^([a-zA-Z0-9_]+)\.write/);
+                        const fileVar = fileVarMatch ? fileVarMatch[1] : '';
                         const writeMatch = text.match(/\.write\s*\((.*?)\)/);
                         if (writeMatch) {
-                            displayText = `Записать в файл: ${mathify(writeMatch[1].trim())}`;
-                        }
-                    } else if (text.includes('.read(') || text.includes('.readline(') || text.includes('.readlines(') || text.includes('csv.reader(') || text.includes('json.load(')) {
-                        kind = 'io';
-                        if (text.includes('csv.reader(')) {
-                            displayText = `Чтение CSV данных`;
-                        } else if (text.includes('json.load(')) {
-                            displayText = `Чтение JSON данных`;
+                            displayText = `Запись в файл${fileVar ? ' ' + fileVar : ''}: ${mathify(writeMatch[1].trim())}`;
                         } else {
-                            displayText = `Чтение данных из файла`;
+                            displayText = `Запись в файл${fileVar ? ' ' + fileVar : ''}`;
+                        }
+                    } else if (text.includes('.read') || text.includes('csv.reader(') || text.includes('json.load(')) {
+                        kind = 'io';
+                        let matchAssign = text.match(/^([a-zA-Z0-9_,\s]+)\s*=/);
+                        let varName = matchAssign ? matchAssign[1].trim() : '';
+                        let fileVarMatch = text.match(/([a-zA-Z0-9_]+)\.read/);
+                        let fileVar = fileVarMatch ? fileVarMatch[1] : '';
+                        if (text.includes('csv.reader(')) {
+                            displayText = `Чтение CSV данных${varName ? ': ' + varName : ''}`;
+                        } else if (text.includes('json.load(')) {
+                            displayText = `Чтение JSON данных${varName ? ': ' + varName : ''}`;
+                        } else {
+                            displayText = `Чтение из файла${fileVar ? ' ' + fileVar : ''}${varName ? ': ' + varName : ''}`;
                         }
                     } else if (/input\s*\(/.test(text)) {
                         kind = 'io';
@@ -978,7 +1012,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 }
             }
         }
-        let shapeType = node.type === 'stmt' ? node.kind : (node.type === 'while' ? 'decision' : (node.type === 'for' ? 'loop' : 'decision'));
+        let shapeType = node.type === 'stmt' ? node.kind : (node.type === 'while' ? 'decision' : (node.type === 'for' ? 'loop' : (node.type === 'with' ? 'process' : 'decision')));
         return getNodeHeight(t, shapeType);
     }
     
@@ -1019,33 +1053,47 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                     falseLeftW = Math.max(...node.falseBlock.map(n => n.leftW!));
                     falseRightW = Math.max(...node.falseBlock.map(n => n.rightW!));
                 }
-                let margin = 15;
-                let trueShift = trueLeftW + margin;
-                let falseShift = falseRightW + margin;
                 
-                let trueTerm = blockTerminates(node.trueBlock);
-                let falseTerm = blockTerminates(node.falseBlock);
-
-                if (!trueTerm && !falseTerm) {
-                    let shift = Math.max(trueLeftW + margin, falseRightW + margin);
-                    trueShift = shift;
-                    falseShift = shift;
+                let trueEmpty = node.trueBlock.length === 0;
+                let falseEmpty = node.falseBlock.length === 0;
+                
+                if (falseEmpty && !trueEmpty) {
+                    node.leftW = Math.max(NODE_WIDTH/2 + 20, trueLeftW + 45);
+                    node.rightW = Math.max(NODE_WIDTH/2, trueRightW);
+                    (node as any).isFalseEmpty = true;
+                } else if (trueEmpty && !falseEmpty) {
+                    node.leftW = Math.max(NODE_WIDTH/2, falseLeftW);
+                    node.rightW = Math.max(NODE_WIDTH/2 + 20, falseRightW + 45);
+                    (node as any).isTrueEmpty = true;
                 } else {
-                    if (trueTerm) {
-                        trueShift = trueLeftW + 45;
+                    let margin = 15;
+                    let trueShift = trueLeftW + margin;
+                    let falseShift = falseRightW + margin;
+                    
+                    let trueTerm = blockTerminates(node.trueBlock);
+                    let falseTerm = blockTerminates(node.falseBlock);
+    
+                    if (!trueTerm && !falseTerm) {
+                        let shift = Math.max(trueLeftW + margin, falseRightW + margin);
+                        trueShift = shift;
+                        falseShift = shift;
+                    } else {
+                        if (trueTerm) {
+                            trueShift = trueLeftW + 45;
+                        }
+                        if (falseTerm) {
+                            falseShift = falseRightW + 45;
+                        }
                     }
-                    if (falseTerm) {
-                        falseShift = falseRightW + 45;
-                    }
+                    
+                    (node as any).trueShift = trueShift;
+                    (node as any).falseShift = falseShift;
+                    
+                    node.leftW = Math.max(NODE_WIDTH/2, falseShift + falseLeftW);
+                    node.rightW = Math.max(NODE_WIDTH/2, trueShift + trueRightW);
                 }
-                
-                (node as any).trueShift = trueShift;
-                (node as any).falseShift = falseShift;
-                
-                node.leftW = Math.max(NODE_WIDTH/2, falseShift + falseLeftW);
-                node.rightW = Math.max(NODE_WIDTH/2, trueShift + trueRightW);
                 node.width = node.leftW + node.rightW;
-            } else if (node.type === 'while' || node.type === 'for') {
+            } else if (node.type === 'while' || node.type === 'for' || node.type === 'with') {
                 computeWidthsMulti(node.body);
                 let bodyLeftW = 0;
                 let bodyRightW = 0;
@@ -1122,7 +1170,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
             let nodeH = getASTNodeHeight(n);
             if (n.type === 'if') {
                  h += nodeH + 20 + Math.max(estimateHeight(n.trueBlock), estimateHeight(n.falseBlock)) + 40;
-            } else if (n.type === 'while' || n.type === 'for') {
+            } else if (n.type === 'while' || n.type === 'for' || n.type === 'with') {
                  h += nodeH + 20 + estimateHeight(n.body) + 60;
             } else if (n.type === 'match') {
                  let maxC = 0;
@@ -1188,6 +1236,62 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
 
             maxReachedY = Math.max(maxReachedY, currentY);
 
+            if (node.type === 'stmt' && (node.text === 'continue' || node.text === 'break')) {
+                const targetPoint = { x: cx, y: currentY - h/2 };
+                const mergeY = targetPoint.y - 20;
+
+                let incomingLabel: string | undefined = undefined;
+                let incomingLabelPos: { x: number, y: number } | undefined = undefined;
+                let hasZeroLengthForLabel = false;
+
+                for (const p of inPts) {
+                    if (p.label) {
+                        incomingLabel = p.label;
+                        incomingLabelPos = p.labelPos;
+                        if (p.from && Math.abs(p.from.y - mergeY) < 1) {
+                            hasZeroLengthForLabel = true;
+                        }
+                    }
+                    if (p.from) {
+                        const px = (p as any).limitX || p.x;
+                        allEdges.push({ 
+                            points: [p.from, {x: px, y: p.from.y}, {x: px, y: mergeY}, {x: cx, y: mergeY}], 
+                            label: p.label, 
+                            labelPos: p.labelPos ? { ...p.labelPos } : undefined,
+                            noArrow: true 
+                        });
+                    } else {
+                        if (Math.abs(p.x - cx) < 1) {
+                            allEdges.push({ points: [p, {x: cx, y: mergeY}], noArrow: true });
+                        } else {
+                            allEdges.push({ points: [p, {x: p.x, y: mergeY}, {x: cx, y: mergeY}], noArrow: true });
+                        }
+                    }
+                }
+
+                if (inPts.length > 0) {
+                    allEdges.push({ 
+                        points: [{x: cx, y: mergeY}, targetPoint],
+                        label: hasZeroLengthForLabel ? incomingLabel : undefined,
+                        labelPos: hasZeroLengthForLabel ? (incomingLabelPos ? { ...incomingLabelPos } : { x: cx + 12, y: mergeY + 12 }) : undefined
+                    });
+                }
+
+                allNodes.push({ id: node.id, type: node.kind, text: node.text, x: cx, y: currentY, height: h, lineIndex: node.lineIndex });
+                
+                let outY = currentY + h/2;
+                if (node.text === 'continue') {
+                    loopContinues.push({x: cx, y: outY, from: {x: cx, y: outY}});
+                } else {
+                    loopBreaks.push({x: cx, y: outY, from: {x: cx, y: outY}});
+                }
+                
+                inPts = [];
+                currentY += h/2 + Y_MARGIN + (nextH ? nextH/2 : 0);
+                maxReachedY = Math.max(maxReachedY, currentY);
+                continue;
+            }
+
             if (inPts.length > 0) {
                 const targetPoint = { x: cx, y: currentY - h/2 };
                 const mergeY = targetPoint.y - 20;
@@ -1209,7 +1313,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                         allEdges.push({ 
                             points: [p.from, {x: px, y: p.from.y}, {x: px, y: mergeY}, {x: cx, y: mergeY}], 
                             label: p.label, 
-                            labelPos: p.labelPos,
+                            labelPos: p.labelPos ? { ...p.labelPos } : undefined,
                             noArrow: true 
                         });
                     } else {
@@ -1224,7 +1328,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 allEdges.push({ 
                     points: [{x: cx, y: mergeY}, targetPoint],
                     label: hasZeroLengthForLabel ? incomingLabel : undefined,
-                    labelPos: hasZeroLengthForLabel ? (incomingLabelPos || { x: cx + 12, y: mergeY + 12 }) : undefined
+                    labelPos: hasZeroLengthForLabel ? (incomingLabelPos ? { ...incomingLabelPos } : { x: cx + 12, y: mergeY + 12 }) : undefined
                 });
                 inPts = [];
             }
@@ -1239,12 +1343,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                     }
                 }
                 allNodes.push({ id: node.id, type: node.kind, text: adjustedText, x: cx, y: currentY, height: h, lineIndex: node.lineIndex });
-                if (node.kind === 'end' || node.text === 'continue' || node.text === 'break') {
-                    if (node.text === 'continue') {
-                        loopContinues.push({ x: cx, y: currentY + h/2 });
-                    } else if (node.text === 'break') {
-                        loopBreaks.push({ x: cx, y: currentY + h/2 });
-                    }
+                if (node.kind === 'end') {
                     inPts = [];
                 } else {
                     inPts = [{ x: cx, y: currentY + h/2 }];
@@ -1254,14 +1353,14 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
             } else if (node.type === 'if') {
                 allNodes.push({ id: node.id, type: 'decision', text: node.condition, x: cx, y: currentY, height: h, lineIndex: node.lineIndex });
                 
-                const trueShift = (node as any).trueShift || (NODE_WIDTH/2 + X_SEP/2);
-                const falseShift = (node as any).falseShift || (NODE_WIDTH/2 + X_SEP/2);
-                const trueCx = cx + trueShift;
-                const falseCx = cx - falseShift;
+                let trueShift = (node as any).trueShift || (NODE_WIDTH/2 + X_SEP/2);
+                let falseShift = (node as any).falseShift || (NODE_WIDTH/2 + X_SEP/2);
+                let trueCx = cx + trueShift;
+                let falseCx = cx - falseShift;
                 
-                const rightOut = { x: cx + NODE_WIDTH/2, y: currentY };
-                const leftOut = { x: cx - NODE_WIDTH/2, y: currentY };
-                const bottomOut = { x: cx, y: currentY + h/2 };
+                let rightOut = { x: cx + NODE_WIDTH/2, y: currentY };
+                let leftOut = { x: cx - NODE_WIDTH/2, y: currentY };
+                let bottomOut = { x: cx, y: currentY + h/2 };
                 
                 let trueEnds: any[], falseEnds: any[];
                 let localMax = currentY;
@@ -1271,13 +1370,31 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 let tFinalY = currentY;
                 let fFinalY = currentY;
                 
+                let trueFrom = rightOut;
+                let falseFrom = leftOut;
+                let trueLabelPos = {x: rightOut.x + 10, y: rightOut.y - 10};
+                let falseLabelPos = {x: leftOut.x - 25, y: leftOut.y - 10};
+                
+                if ((node as any).isFalseEmpty) {
+                    trueCx = cx;
+                    trueFrom = bottomOut;
+                    trueLabelPos = {x: bottomOut.x + 35, y: bottomOut.y + 5};
+                    falseCx = cx - node.leftW + 20;
+                } else if ((node as any).isTrueEmpty) {
+                    falseCx = cx;
+                    falseFrom = bottomOut;
+                    falseLabelPos = {x: bottomOut.x - 35, y: bottomOut.y + 15};
+                    trueFrom = rightOut;
+                    trueCx = cx + node.rightW - 20;
+                }
+                
                 if (node.trueBlock.length > 0) {
                     let firstTrueY = currentY + h/2 + Y_MARGIN + getASTNodeHeight(node.trueBlock[0])/2;
                     let isSingleTerm = (blockTerminates(node.trueBlock) && node.trueBlock.length === 1);
                     if (isSingleTerm && node.falseBlock.length === 0) {
                         firstTrueY = currentY + h/2 + Y_MARGIN + getASTNodeHeight(node.trueBlock[0])/2;
                     }
-                    const tRes = layout(node.trueBlock, trueCx, firstTrueY, [{ x: trueCx, y: currentY, from: rightOut, label: 'Да', labelPos: {x: rightOut.x + 10, y: rightOut.y - 10} }], false, loopBreaks, loopContinues);
+                    const tRes = layout(node.trueBlock, trueCx, firstTrueY, [{ x: trueCx, y: currentY, from: trueFrom, label: 'Да', labelPos: trueLabelPos }], false, loopBreaks, loopContinues);
                     trueEnds = tRes.endPoints;
                     if (trueEnds.length === 0) trueTerminates = true;
                     tFinalY = tRes.finalY;
@@ -1286,7 +1403,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                     }
                     localMax = Math.max(localMax, tFinalY);
                 } else {
-                    trueEnds = [{x: trueCx, y: currentY, from: rightOut, label: 'Да', labelPos: {x: rightOut.x + 10, y: rightOut.y - 10}}];
+                    trueEnds = [{x: trueCx, y: currentY, from: trueFrom, label: 'Да', labelPos: trueLabelPos}];
                 }
                 
                 if (node.falseBlock.length > 0) {
@@ -1295,7 +1412,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                     if (isSingleTerm && node.trueBlock.length === 0) {
                         firstFalseY = currentY + h/2 + Y_MARGIN + getASTNodeHeight(node.falseBlock[0])/2;
                     }
-                    const fRes = layout(node.falseBlock, falseCx, firstFalseY, [{ x: falseCx, y: currentY, from: leftOut, label: 'Нет', labelPos: {x: leftOut.x - 25, y: leftOut.y - 10} }], false, loopBreaks, loopContinues);
+                    const fRes = layout(node.falseBlock, falseCx, firstFalseY, [{ x: falseCx, y: currentY, from: falseFrom, label: 'Нет', labelPos: falseLabelPos }], false, loopBreaks, loopContinues);
                     falseEnds = fRes.endPoints;
                     if (falseEnds.length === 0) falseTerminates = true;
                     fFinalY = fRes.finalY;
@@ -1304,23 +1421,23 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                     }
                     localMax = Math.max(localMax, fFinalY);
                 } else {
-                    falseEnds = [{x: falseCx, y: currentY, from: leftOut, label: 'Нет', labelPos: {x: leftOut.x - 25, y: leftOut.y - 10}}];
+                    falseEnds = [{x: falseCx, y: currentY, from: falseFrom, label: 'Нет', labelPos: falseLabelPos}];
                 }
                 
-                if (trueTerminates && node.falseBlock.length === 0) {
+                if (trueTerminates && node.falseBlock.length === 0 && !(node as any).isFalseEmpty) {
                     falseEnds = [{ 
                         x: cx, y: currentY + h/2, 
                         from: bottomOut, 
                         label: 'Нет', 
-                        labelPos: {x: bottomOut.x + 15, y: bottomOut.y + 15},
+                        labelPos: {x: bottomOut.x - 35, y: bottomOut.y + 15},
                         limitX: cx
                     }];
-                } else if (falseTerminates && node.trueBlock.length === 0) {
+                } else if (falseTerminates && node.trueBlock.length === 0 && !(node as any).isTrueEmpty) {
                     trueEnds = [{ 
                         x: cx, y: currentY + h/2, 
                         from: bottomOut, 
                         label: 'Да', 
-                        labelPos: {x: bottomOut.x + 15, y: bottomOut.y + 15},
+                        labelPos: {x: bottomOut.x + 35, y: bottomOut.y + 15},
                         limitX: cx
                     }];
                 }
@@ -1333,62 +1450,32 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 if (trueTerminates && falseTerminates) {
                     inPts = [];
                 } else if (trueTerminates && !falseTerminates) {
-                    let outPts = [];
-                    for (let pt of falseEnds) {
-                        let extra = pt.label ? {label: pt.label, labelPos: pt.labelPos} : {};
-                        if (pt.from) {
-                            let px = (pt as any).limitX || pt.x;
-                            allEdges.push({ 
-                                points: [pt.from, {x: px, y: pt.from.y}, {x: px, y: commonY}], 
-                                ...extra, noArrow: true
-                            });
-                            outPts.push({x: px, y: commonY});
-                        } else {
-                            allEdges.push({ points: [pt, {x: pt.x, y: commonY}], ...extra, noArrow: true });
-                            outPts.push({x: pt.x, y: commonY});
-                        }
-                    }
-                    inPts = outPts;
+                    inPts = falseEnds.map(pt => ({ ...pt, y: Math.max(pt.y || 0, commonY) }));
                 } else if (!trueTerminates && falseTerminates) {
-                    let outPts = [];
-                    for (let pt of trueEnds) {
-                        let extra = pt.label ? {label: pt.label, labelPos: pt.labelPos} : {};
-                        if (pt.from) {
-                            let px = (pt as any).limitX || pt.x;
-                            allEdges.push({ 
-                                points: [pt.from, {x: px, y: pt.from.y}, {x: px, y: commonY}], 
-                                ...extra, noArrow: true
-                            });
-                            outPts.push({x: px, y: commonY});
-                        } else {
-                            allEdges.push({ points: [pt, {x: pt.x, y: commonY}], ...extra, noArrow: true });
-                            outPts.push({x: pt.x, y: commonY});
-                        }
-                    }
-                    inPts = outPts;
+                    inPts = trueEnds.map(pt => ({ ...pt, y: Math.max(pt.y || 0, commonY) }));
                 } else {
                     for (let pt of trueEnds) {
-                         let extra = pt.label ? {label: pt.label, labelPos: pt.labelPos} : {};
+                         let extra = pt.label ? {label: pt.label, labelPos: pt.labelPos ? { ...pt.labelPos } : undefined} : {};
                          if (pt.from) {
                              let px = (pt as any).limitX || pt.x;
                              allEdges.push({ 
                                   points: [pt.from, {x: px, y: pt.from.y}, {x: px, y: commonY}, {x: cx, y: commonY}], 
-                                  ...extra
+                                  ...extra, noArrow: Math.abs(px - cx) < 1
                              });
                          } else {
-                             allEdges.push({ points: [pt, {x: pt.x, y: commonY}, {x: cx, y: commonY}], ...extra });
+                             allEdges.push({ points: [pt, {x: pt.x, y: commonY}, {x: cx, y: commonY}], ...extra, noArrow: Math.abs(pt.x - cx) < 1 });
                          }
                     }
                     for (let pt of falseEnds) {
-                         let extra = pt.label ? {label: pt.label, labelPos: pt.labelPos} : {};
+                         let extra = pt.label ? {label: pt.label, labelPos: pt.labelPos ? { ...pt.labelPos } : undefined} : {};
                          if (pt.from) {
                              let px = (pt as any).limitX || pt.x;
                              allEdges.push({ 
                                   points: [pt.from, {x: px, y: pt.from.y}, {x: px, y: commonY}, {x: cx, y: commonY}], 
-                                  ...extra
+                                  ...extra, noArrow: Math.abs(px - cx) < 1
                              });
                          } else {
-                             allEdges.push({ points: [pt, {x: pt.x, y: commonY}, {x: cx, y: commonY}], ...extra });
+                             allEdges.push({ points: [pt, {x: pt.x, y: commonY}, {x: cx, y: commonY}], ...extra, noArrow: Math.abs(pt.x - cx) < 1 });
                          }
                     }
                     inPts = [{x: cx, y: commonY, label: '', skipTopVertical: true } as any];
@@ -1516,12 +1603,12 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 let bContinues: any[] = [];
                 if (node.body.length > 0) {
                     const firstBodyY = currentY + h/2 + Y_MARGIN + getASTNodeHeight(node.body[0])/2;
-                    const bRes = layout(node.body, cx, firstBodyY, [{ x: cx, y: currentY + h/2, from: bodyIn, label: 'Да', labelPos: {x: cx + 15, y: currentY + h/2 + Y_MARGIN/2} }], true, bBreaks, bContinues);
+                    const bRes = layout(node.body, cx, firstBodyY, [{ x: cx, y: currentY + h/2, from: bodyIn, label: 'Да', labelPos: {x: cx + 35, y: currentY + h/2 + Y_MARGIN/2} }], true, bBreaks, bContinues);
                     bodyEnds = bRes.endPoints;
                     localMax = Math.max(localMax, bRes.finalY);
                     actEndCx = bRes.endCx;
                 } else {
-                    bodyEnds = [{x: cx, y: currentY + h/2 + Y_MARGIN, from: bodyIn, label: 'Да', labelPos: {x: cx + 15, y: currentY + h/2 + Y_MARGIN} }];
+                    bodyEnds = [{x: cx, y: currentY + h/2 + Y_MARGIN, from: bodyIn, label: 'Да', labelPos: {x: cx + 35, y: currentY + h/2 + Y_MARGIN} }];
                 }
                 
                 bodyEnds.push(...bContinues.map(c => ({...c, from: c, isContinue: true})));
@@ -1623,6 +1710,50 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 
                 currentY = nextY + X_SEP;
                 maxReachedY = Math.max(maxReachedY, currentY);
+            } else if (node.type === 'with') {
+                allNodes.push({ id: node.id, type: 'stmt', kind: 'process', text: node.condition, x: cx, y: currentY, height: h, lineIndex: node.lineIndex });
+                let bBreaks: any[] = [];
+                let bConts: any[] = [];
+                
+                let inBodyPts = [{x: cx, y: currentY + h/2}];
+                let bodyRes = layout(node.body, cx, currentY + h/2 + Y_MARGIN + (node.body.length > 0 ? getASTNodeHeight(node.body[0])/2 : 0), inBodyPts, false, bBreaks, bConts);
+                
+                let mergeY = bodyRes.finalY;
+                let endText = node.closeCondition;
+                let endH = getNodeHeight(endText, 'process');
+                let endY = mergeY + 15 + endH/2;
+                
+                let mergedPaths = false;
+                for (let p of bodyRes.endPoints) {
+                    if ((p as any).from) {
+                        const px = (p as any).limitX || p.x;
+                        allEdges.push({ 
+                            points: [(p as any).from, {x: px, y: (p as any).from.y}, {x: px, y: mergeY}, {x: cx, y: mergeY}], 
+                            fromNodeId: (p as any).fromNodeId, toNodeId: node.id + '_end'
+                        });
+                        mergedPaths = true;
+                    }
+                }
+                if (!mergedPaths && node.body.length === 0) {
+                    allEdges.push({
+                        points: [{x: cx, y: currentY + h/2}, {x: cx, y: endY - endH/2}],
+                        toNodeId: node.id + '_end'
+                    });
+                } else if (!mergedPaths) {
+                    allEdges.push({
+                        points: [{x: cx, y: mergeY}, {x: cx, y: endY - endH/2}],
+                        toNodeId: node.id + '_end'
+                    });
+                }
+                
+                allNodes.push({ id: node.id + '_end', type: 'stmt', kind: 'process', text: endText, x: cx, y: endY, height: endH });
+                inPts = [{ x: cx, y: endY + endH/2, from: {x: cx, y: endY + endH/2} } as any];
+                
+                if (bBreaks.length > 0) loopBreaks.push(...bBreaks);
+                if (bConts.length > 0) loopContinues.push(...bConts);
+                
+                currentY = endY + endH/2;
+                maxReachedY = Math.max(maxReachedY, currentY);
             } else if (node.type === 'for') {
                 allNodes.push({ id: node.id, type: 'loop_begin', text: node.condition, x: cx, y: currentY, height: h, lineIndex: node.lineIndex });
                 
@@ -1668,6 +1799,15 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 }
                 
                 let endText = "Конец цикла\n" + node.condition;
+                if (node.type === 'for') {
+                    if (node.condition.includes(' из ')) {
+                        endText = node.condition.split(' из ')[0].trim();
+                    } else if (node.condition.includes(' = ')) {
+                        endText = node.condition.split(' = ')[0].trim();
+                    } else {
+                        endText = node.condition;
+                    }
+                }
                 let endH = getNodeHeight(endText, 'loop_end');
                 // Calculate next valid position for end element based on incoming lines
                 let endY = mergeY + 15 + endH/2;
@@ -2131,7 +2271,19 @@ function EdgePolyline({ edge, theme = 'light' }: { edge: FlowEdge; theme?: strin
         <g>
             <path d={pathData} fill="none" stroke={theme === 'dark' ? '#d4d4d8' : '#18181b'} strokeWidth="1.5" markerEnd={edge.noArrow ? undefined : `url(#arrowhead-${theme})`} strokeLinejoin="round" />
             {labelPoint && labelStr && (
-                <text x={labelPoint.x} y={labelPoint.y} fontSize="13" fontWeight="bold" fill={theme === 'dark' ? '#d4d4d8' : '#18181b'} textAnchor="middle" className="uppercase tracking-wider">
+                <text 
+                    x={labelPoint.x} 
+                    y={labelPoint.y} 
+                    fontSize="13" 
+                    fontWeight="bold" 
+                    fill={theme === 'dark' ? '#d4d4d8' : '#18181b'} 
+                    stroke={theme === 'dark' ? '#18181b' : '#ffffff'}
+                    strokeWidth="4"
+                    paintOrder="stroke"
+                    textAnchor="middle" 
+                    dominantBaseline="central"
+                    className="uppercase tracking-wider"
+                >
                     {labelStr}
                 </text>
             )}
@@ -2554,6 +2706,9 @@ const downloadSvg = (svgId: string, title: string) => {
     source = source.replace(/\bviewBox="[^"]+"/, ''); 
     source = source.replace(/^<svg/, `<svg viewBox="${svgBBox.x - padding} ${svgBBox.y - padding} ${w} ${h}" width="${w}" height="${h}" `);
     
+    // Make SVG transparent by removing styling classes like bg-white and drop-shadow
+    source = source.replace(/\bclass(?:Name)?="[^"]+"/g, '');
+    
     // Add white background specifically for SVG download if needed, or leave it transparent
     const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source);
     const a = document.createElement("a");
@@ -2590,6 +2745,9 @@ const downloadPng = (svgId: string, title: string) => {
     source = source.replace(/\bheight="[^"]+"/, '');
     source = source.replace(/\bviewBox="[^"]+"/, ''); 
     source = source.replace(/^<svg/, `<svg viewBox="${svgBBox.x - padding} ${svgBBox.y - padding} ${w} ${h}" width="${w}" height="${h}" `);
+    
+    // Make PNG transparent by removing background classes
+    source = source.replace(/\bclass(?:Name)?="[^"]+"/g, '');
     
     const canvas = document.createElement("canvas");
     const scale = 2;
@@ -2640,7 +2798,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
 
     let xml = `<mxfile host="Electron" modified="${new Date().toISOString()}" agent="AIStudio" version="21.6.8" type="device">\n`;
     xml += `  <diagram id="diag-${Math.random().toString(36).substring(2, 9)}" name="Page-1">\n`;
-    xml += `    <mxGraphModel dx="1200" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">\n`;
+    xml += `    <mxGraphModel dx="1200" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" background="none" math="0" shadow="0">\n`;
     xml += `      <root>\n`;
     xml += `        <mxCell id="0" />\n`;
     xml += `        <mxCell id="1" parent="0" />\n`;

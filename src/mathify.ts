@@ -55,6 +55,9 @@ export function mathify(text: string): string {
     res = res.replace(/\|\|/g, ' или ');
     res = res.replace(/\band\b/g, ' и ');
     res = res.replace(/\bor\b/g, ' или ');
+    res = res.replace(/\bis not\b/g, '≠');
+    res = res.replace(/\bis\b/g, '=');
+    res = res.replace(/\bnot\b/g, 'не ');
     
     // Functions
     res = res.replace(/(?:math\.)?sqrt\((.*?)\)/g, '√($1)');
