@@ -2076,30 +2076,42 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
 
         if (pageIntervals.length > 1) {
             let boundaries = pageIntervals.map(pi => pi.yMax).filter(y => y !== Infinity);
-            allEdgesFinal.forEach(e => {
-                if (!e.segments || e.segments.length < 2) return;
-                boundaries.forEach(yB => {
-                    let startY = e.segments![0].startY;
-                    let endY = e.segments![e.segments!.length - 1].endY;
-                    if (startY < yB && endY >= yB) {
-                        for (let i = 0; i < e.segments!.length; i++) {
-                            let seg = e.segments![i];
-                            if (Math.abs(seg.startY - seg.endY) < 1) {
-                                if (seg.startY >= yB) {
-                                    let newY = Math.max(startY + 20, yB - 45);
-                                    if (newY < yB) {
-                                        seg.startY = newY;
-                                        seg.endY = newY;
-                                        if (i > 0) {
-                                            e.segments![i-1].endY = newY;
-                                        }
-                                        if (i < e.segments!.length - 1) {
-                                            e.segments![i+1].startY = newY;
-                                        }
-                                    }
+            boundaries.forEach(yB => {
+                let interval = pageIntervals.find(pi => pi.yMax === yB);
+                let yMin = interval ? interval.yMin : 0;
+                let lastPageNodes = allNodes.filter(n => n.y >= yMin && n.y < yB);
+
+                allEdgesFinal.forEach(e1 => {
+                    if (!e1.segments || e1.segments.length === 0) return;
+                    let startY = e1.segments[0].startY;
+                    let lastSeg = e1.segments[e1.segments.length - 1];
+                    let mergeY = lastSeg.endY;
+                    let cx = lastSeg.endX;
+
+                    if (startY < yB && mergeY >= yB) {
+                        allEdgesFinal.forEach(e2 => {
+                            if (e1.id === e2.id) return;
+                            if (!e2.segments || e2.segments.length === 0) return;
+                            let e2FirstSeg = e2.segments[0];
+
+                            if (Math.abs(e2FirstSeg.startX - cx) < 2 && Math.abs(e2FirstSeg.startY - mergeY) < 2) {
+                                let maxNodeBottom = lastPageNodes.length > 0 ? Math.max(...lastPageNodes.map(n => n.y + (n.height || 64)/2)) : startY;
+                                let newY = Math.max(startY + 20, maxNodeBottom + 15);
+                                if (newY >= yB - 25) {
+                                    newY = yB - 45;
+                                }
+                                if (newY < yB) {
+                                    e1.segments!.forEach(seg => {
+                                        if (Math.abs(seg.startY - mergeY) < 2) seg.startY = newY;
+                                        if (Math.abs(seg.endY - mergeY) < 2) seg.endY = newY;
+                                    });
+                                    e2.segments!.forEach(seg => {
+                                        if (Math.abs(seg.startY - mergeY) < 2) seg.startY = newY;
+                                        if (Math.abs(seg.endY - mergeY) < 2) seg.endY = newY;
+                                    });
                                 }
                             }
-                        }
+                        });
                     }
                 });
             });
@@ -2132,9 +2144,11 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                         let segMaxY = Math.max(sy, ey);
                         let segMinY = Math.min(sy, ey);
                         if (segMaxY >= yMin && segMinY < yMax) {
-                            let topY = Math.max(segMinY, yMin);
-                            let localTopY = topY - yMin;
-                            if (localTopY < minGapLocalY) minGapLocalY = localTopY;
+                            if (segMinY >= yMin) {
+                                let topY = Math.max(segMinY, yMin);
+                                let localTopY = topY - yMin;
+                                if (localTopY < minGapLocalY) minGapLocalY = localTopY;
+                            }
                         }
 
                         if (sy >= yMin && sy < yMax) {
