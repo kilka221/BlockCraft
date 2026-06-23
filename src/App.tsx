@@ -12,10 +12,11 @@ export type ASTNode =
   | { type: 'if', id: string, condition: string, trueBlock: ASTNode[], falseBlock: ASTNode[], width?: number, leftW?: number, rightW?: number, lineIndex?: number }
   | { type: 'while', id: string, condition: string, body: ASTNode[], width?: number, leftW?: number, rightW?: number, lineIndex?: number }
   | { type: 'for', id: string, condition: string, body: ASTNode[], width?: number, leftW?: number, rightW?: number, lineIndex?: number }
-  | { type: 'match', id: string, condition: string, cases: { condition: string, block: ASTNode[] }[], defaultBlock?: ASTNode[], width?: number, leftW?: number, rightW?: number, lineIndex?: number };
+  | { type: 'match', id: string, condition: string, cases: { condition: string, block: ASTNode[] }[], defaultBlock?: ASTNode[], width?: number, leftW?: number, rightW?: number, lineIndex?: number }
+  | { type: 'with', id: string, condition: string, closeCondition: string, body: ASTNode[], width?: number, leftW?: number, rightW?: number, lineIndex?: number };
 
-interface FlowNode { id: string; type: string; text: string; x: number; y: number; height?: number; hidden?: boolean; lineIndex?: number; }
-interface FlowEdge { id?: string; points?: {x: number, y: number}[]; segments?: {startX: number, startY: number, endX: number, endY: number}[]; label?: string; noArrow?: boolean; labelPos?: {x: number, y: number}; hidden?: boolean; }
+interface FlowNode { id: string; type: string; text: string; x: number; y: number; height?: number; hidden?: boolean; lineIndex?: number; kind?: string; }
+interface FlowEdge { id?: string; points?: {x: number, y: number}[]; segments?: {startX: number, startY: number, endX: number, endY: number}[]; label?: string; noArrow?: boolean; labelPos?: {x: number, y: number}; hidden?: boolean; fromNodeId?: string; toNodeId?: string; }
 
 const DEFAULT_CODE = `import ui
 import data_manager
@@ -977,22 +978,22 @@ import { parseCppSourceWhole } from './parseCpp';
 import { mathify, cleanIoArgs, consolidateBlocks, isSubprogramCall } from './mathify';
 import { translatePythonLine } from './translate';
 
-export function buildGraphs(code: string, language: string, activeOverrides: any = {}) {
+export function buildGraphs(code: string, language: string, activeOverrides: any = {}, splitMode: 'auto' | 'manual' = 'auto', allCustomCuts: Record<number, number[]> = {}, isScissorsMode: boolean = false) {
     const parsed = language === 'cpp' ? parseCppSourceWhole(code) : parsePythonSourceWhole(code);
     let graphs = [];
     let idx = 0;
     if (parsed.main.length > 0) {
-        graphs.push(buildGraphForAst(parsed.main, 'Main', undefined, true, activeOverrides[idx] || {}));
+        graphs.push(buildGraphForAst(parsed.main, 'Main', undefined, true, activeOverrides[idx] || {}, splitMode, allCustomCuts[idx] || [], isScissorsMode));
         idx++;
     }
     for (let f of parsed.functions) {
-        graphs.push(buildGraphForAst(f.ast, f.name, f.returnType, false, activeOverrides[idx] || {}));
+        graphs.push(buildGraphForAst(f.ast, f.name, (f as any).returnType, false, activeOverrides[idx] || {}, splitMode, allCustomCuts[idx] || [], isScissorsMode));
         idx++;
     }
     return graphs;
 }
 
-function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | undefined, isMain: boolean, graphOverrides: any = {}) {
+function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | undefined, isMain: boolean, graphOverrides: any = {}, splitMode: 'auto' | 'manual' = 'auto', customCuts: number[] = [], isScissorsMode: boolean = false) {
     const NODE_WIDTH = 220;
     const X_SEP = 60;
     const Y_MARGIN = 20;
@@ -1205,7 +1206,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
             // "запрети чтобы на странице был один блок ... пусть лучше предыдущая страница будет длиннее"
             // If we are at the root level and the rest of the nodes are small enough to just extend the page, skip page breaking.
             let estRemaining = isRoot ? estimateHeight(nodes.slice(i)) : Infinity;
-            const allowPagination = !(isRoot && estRemaining < 800);
+            const allowPagination = (splitMode === 'auto') && !(isRoot && estRemaining < 800);
             
             if (allowPagination) {
                 // if even the node shape itself doesn't fit, push it to next page
@@ -1226,9 +1227,8 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 const isComplex = ['if', 'while', 'for', 'match'].includes(node.type);
                 if (isComplex) {
                     let estH = estimateHeight([node]);
-                    // If it doesn't fit, but we are near the bottom of the page (e.g. less than 450px left), 
-                    // OR it's a huge block but we'd rather it starts clean.
-                    if (estH > pageRemaining && pageRemaining < 450) {
+                    // Push to the next page if the block doesn't fit, or if there is less than 200px remaining (to prevent cut bends)
+                    if ((estH > pageRemaining && pageRemaining < 450) || pageRemaining < 200) {
                         currentY = (pageIndex + 1) * PAGE_LAYOUT_H + 60 + h/2;
                     }
                 }
@@ -1281,7 +1281,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 
                 let outY = currentY + h/2;
                 if (node.text === 'continue') {
-                    loopContinues.push({x: cx, y: outY, from: {x: cx, y: outY}});
+                    // Do not push to loopContinues or loopBreaks so that no line goes down from continue
                 } else {
                     loopBreaks.push({x: cx, y: outY, from: {x: cx, y: outY}});
                 }
@@ -2007,7 +2007,12 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
     const PAGE_H = 1200;
     let pages: {nodes: FlowNode[], edges: FlowEdge[], width: number, height: number}[] = [];
     
-    let shouldSplit = actualMaxY > PAGE_H + 50;
+    let shouldSplit = false;
+    if (splitMode === 'manual') {
+        shouldSplit = (customCuts && customCuts.length > 0) && !isScissorsMode;
+    } else {
+        shouldSplit = actualMaxY > PAGE_H + 50;
+    }
     
     if (!shouldSplit) {
         let minX = Math.min(...allNodes.map(n => n.x - NODE_WIDTH/2));
@@ -2040,25 +2045,71 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
         });
         pages.push({ nodes: allNodes, edges: allEdgesFinal, width: pageCanvasWidth, height: actualMaxY + 100 });
     } else {
-        let maxNodeY = Math.max(...allNodes.map(n => n.y), ...allEdgesFinal.flatMap(e => e.segments ? e.segments.map(s => Math.max(s.startY, s.endY)) : []));
-        let maxS = Math.floor(maxNodeY / PAGE_H);
+        let pageIntervals: { yMin: number, yMax: number, s: number }[] = [];
         
-        let jumpCounter = 65;
-        let jumpMap = new Map<string, string>();
-
-        if (maxS > 0) {
-            let lastPageNodes = allNodes.filter(n => n.y >= maxS * PAGE_H);
-            let lastPageMaxY = lastPageNodes.length > 0 ? Math.max(...lastPageNodes.map(n => n.y)) : 0;
-            // Merge last page if it has few nodes or doesn't stretch too far down
-            if (lastPageNodes.length <= 8 || (lastPageMaxY - maxS * PAGE_H) < 800) {
-                 maxS--;
+        if (splitMode === 'manual') {
+            let sortedCuts = [...customCuts].sort((a, b) => a - b);
+            for (let s = 0; s <= sortedCuts.length; s++) {
+                let yMin = (s === 0) ? 0 : sortedCuts[s - 1];
+                let yMax = (s === sortedCuts.length) ? Infinity : sortedCuts[s];
+                pageIntervals.push({ yMin, yMax, s });
+            }
+        } else {
+            let maxNodeY = Math.max(...allNodes.map(n => n.y), ...allEdgesFinal.flatMap(e => e.segments ? e.segments.map(s => Math.max(s.startY, s.endY)) : []));
+            let maxS = Math.floor(maxNodeY / PAGE_H);
+            
+            if (maxS > 0) {
+                let lastPageNodes = allNodes.filter(n => n.y >= maxS * PAGE_H);
+                let lastPageMaxY = lastPageNodes.length > 0 ? Math.max(...lastPageNodes.map(n => n.y)) : 0;
+                if (lastPageNodes.length <= 8 || (lastPageMaxY - maxS * PAGE_H) < 800) {
+                     maxS--;
+                }
+            }
+            for (let s = 0; s <= maxS; s++) {
+                pageIntervals.push({
+                    yMin: s * PAGE_H,
+                    yMax: (s === maxS) ? Infinity : (s+1) * PAGE_H,
+                    s
+                });
             }
         }
 
-        for (let s = 0; s <= maxS; s++) {
-            let yMin = s * PAGE_H;
-            let yMax = (s === maxS) ? Infinity : (s+1) * PAGE_H;
-            
+        if (pageIntervals.length > 1) {
+            let boundaries = pageIntervals.map(pi => pi.yMax).filter(y => y !== Infinity);
+            allEdgesFinal.forEach(e => {
+                if (!e.segments || e.segments.length < 2) return;
+                boundaries.forEach(yB => {
+                    let startY = e.segments![0].startY;
+                    let endY = e.segments![e.segments!.length - 1].endY;
+                    if (startY < yB && endY >= yB) {
+                        for (let i = 0; i < e.segments!.length; i++) {
+                            let seg = e.segments![i];
+                            if (Math.abs(seg.startY - seg.endY) < 1) {
+                                if (seg.startY >= yB) {
+                                    let newY = Math.max(startY + 20, yB - 45);
+                                    if (newY < yB) {
+                                        seg.startY = newY;
+                                        seg.endY = newY;
+                                        if (i > 0) {
+                                            e.segments![i-1].endY = newY;
+                                        }
+                                        if (i < e.segments!.length - 1) {
+                                            e.segments![i+1].startY = newY;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+        }
+
+        let jumpCounter = 65;
+        let jumpMap = new Map<string, string>();
+
+        for (let interval of pageIntervals) {
+            let { yMin, yMax, s } = interval;
             let pageNodesList = allNodes.filter(n => n.y >= yMin && n.y < yMax);
 
             let minGapLocalY = PAGE_H;
@@ -2078,7 +2129,6 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                         let sy = seg.startY;
                         let ey = seg.endY;
 
-                        // To calculate minGap, we want to know if there's any visible line starting high up
                         let segMaxY = Math.max(sy, ey);
                         let segMinY = Math.min(sy, ey);
                         if (segMaxY >= yMin && segMinY < yMax) {
@@ -2087,7 +2137,6 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                             if (localTopY < minGapLocalY) minGapLocalY = localTopY;
                         }
 
-                        // For maxBottom, only use points that actually terminate INSIDE the page
                         if (sy >= yMin && sy < yMax) {
                             let localSy = sy - yMin;
                             if (localSy > maxBottomLocalY) maxBottomLocalY = localSy;
@@ -2536,6 +2585,19 @@ export default function App() {
   React.useEffect(() => { localStorage.setItem('blockcraft_theme', theme); }, [theme]);
   React.useEffect(() => { localStorage.setItem('blockcraft_font', fontFamily); }, [fontFamily]);
 
+  const [splitMode, setSplitMode] = useState<'auto' | 'manual'>(() => {
+    return (localStorage.getItem('blockcraft_split_mode') as 'auto' | 'manual') || 'auto';
+  });
+  const [isScissorsMode, setIsScissorsMode] = useState<boolean>(false);
+  const [customCuts, setCustomCuts] = useState<Record<number, number[]>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('blockcraft_custom_cuts') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const [hoveredY, setHoveredY] = useState<number | null>(null);
+
   const pushHistory = (newOverrides: Record<number, any>) => {
       setOverrides(newOverrides);
       setHistory(prev => {
@@ -2612,12 +2674,12 @@ export default function App() {
   
   const graphs = useMemo(() => {
       try {
-          return buildGraphs(code, language, overrides);
+          return buildGraphs(code, language, overrides, splitMode, customCuts, isScissorsMode);
       } catch (e) {
           console.error(e);
           return [];
       }
-  }, [code, language, overrides]);
+  }, [code, language, overrides, splitMode, customCuts, isScissorsMode]);
 
   const findGraphAndNodeByLine = (lineIdx: number) => {
       for (let gIdx = 0; gIdx < graphs.length; gIdx++) {
@@ -2642,6 +2704,12 @@ export default function App() {
 
   const activeGraph = graphs[activeTab] || null;
   const activeGraphPage = activeGraph ? (activeGraph.pages[activePage] || activeGraph.pages[0] || null) : null;
+
+  React.useEffect(() => {
+      if (activeGraph && activePage >= activeGraph.pages.length) {
+          setActivePage(0);
+      }
+  }, [activeGraph?.pages?.length, activePage]);
 
   React.useEffect(() => {
       const textarea = document.querySelector('.npm__react-simple-code-editor__textarea') as HTMLTextAreaElement;
@@ -3138,27 +3206,165 @@ const downloadDrawio = (title: string, fontFamily: string) => {
             </div>
           )}
           <div className="w-full sticky top-0 z-30 shrink-0 shadow-sm border-b border-zinc-200 dark:border-zinc-800/80 bg-white/90 dark:bg-[#232328]/90 backdrop-blur transition-colors duration-300">
-              {activeGraph && activeGraph.pages.length > 1 && (
-                  <div className="w-full px-4 py-2 flex items-center justify-center gap-2 border-t border-zinc-200 dark:border-zinc-800/80 shadow-[inset_0_2px_4px_-2px_rgba(0,0,0,0.05)] dark:shadow-none transition-colors duration-300">
-                     <button
-                        onClick={() => setActivePage(p => Math.max(0, p - 1))}
-                        disabled={activePage === 0}
-                        className="px-3 py-1 rounded bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-sm font-medium hover:bg-zinc-50 dark:hover:bg-zinc-700 text-zinc-900 dark:text-zinc-100 disabled:opacity-50 disabled:hover:bg-white dark:disabled:hover:bg-zinc-800 transition-colors"
-                     >
-                        ← Пред. страница
-                     </button>
-                     <span className="text-sm font-semibold text-zinc-600 dark:text-zinc-400 transition-colors">
-                        Страница {activePage + 1} из {activeGraph.pages.length}
-                     </span>
-                     <button
-                        onClick={() => setActivePage(p => Math.min(activeGraph.pages.length - 1, p + 1))}
-                        disabled={activePage === activeGraph.pages.length - 1}
-                        className="px-3 py-1 rounded bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-sm font-medium hover:bg-zinc-50 dark:hover:bg-zinc-700 text-zinc-900 dark:text-zinc-100 disabled:opacity-50 disabled:hover:bg-white dark:disabled:hover:bg-zinc-800 transition-colors"
-                     >
-                        След. страница →
-                     </button>
+              <div className="w-full px-4 py-2 flex flex-wrap items-center justify-between gap-4 border-b border-zinc-100 dark:border-zinc-800/40 relative min-h-[48px]">
+                  {/* Left: Mode toggle & Scissors */}
+                  <div className="flex items-center gap-4 flex-wrap">
+                      <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Режим деления:</span>
+                          <div className="flex bg-zinc-100 dark:bg-zinc-800 p-0.5 rounded-lg border border-zinc-200 dark:border-zinc-700/60">
+                              <button
+                                  onClick={() => {
+                                      setSplitMode('auto');
+                                      setIsScissorsMode(false);
+                                      localStorage.setItem('blockcraft_split_mode', 'auto');
+                                  }}
+                                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${splitMode === 'auto' ? 'bg-white dark:bg-zinc-700 text-zinc-950 dark:text-white shadow-sm' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200'}`}
+                              >
+                                  Автоматический
+                              </button>
+                              <button
+                                  onClick={() => {
+                                      setSplitMode('manual');
+                                      localStorage.setItem('blockcraft_split_mode', 'manual');
+                                  }}
+                                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${splitMode === 'manual' ? 'bg-white dark:bg-zinc-700 text-zinc-950 dark:text-white shadow-sm' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200'}`}
+                              >
+                                  Ручной (Ножницы)
+                              </button>
+                          </div>
+                      </div>
+
+                      {splitMode === 'manual' && (
+                          <div className="flex items-center gap-2">
+                              <button
+                                  onClick={() => setIsScissorsMode(!isScissorsMode)}
+                                  className={`flex items-center gap-2 px-3 py-1 text-xs font-medium rounded-md border transition-all ${isScissorsMode ? 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 shadow-sm' : 'bg-white dark:bg-zinc-800 border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700/80'}`}
+                              >
+                                  <span>✂️</span>
+                                  <span>{isScissorsMode ? 'Ножницы: АКТИВНЫ (Нажмите на схему)' : 'Включить Ножницы'}</span>
+                              </button>
+                              {isScissorsMode && (customCuts[activeTab] || []).length > 0 && (
+                                  <button
+                                      onClick={() => {
+                                          const updated = { ...customCuts, [activeTab]: [] };
+                                          setCustomCuts(updated);
+                                          localStorage.setItem('blockcraft_custom_cuts', JSON.stringify(updated));
+                                      }}
+                                      className="px-2 py-1 text-xs font-medium rounded bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-600 dark:text-zinc-400 transition"
+                                      title="Очистить все разрезы"
+                                  >
+                                      Очистить всё
+                                  </button>
+                              )}
+                          </div>
+                      )}
                   </div>
-              )}
+
+                  {/* Center: Pagination Controls */}
+                  {activeGraph && activeGraph.pages.length > 1 ? (
+                      <div className="md:absolute md:left-1/2 md:-translate-x-1/2 flex items-center gap-2 z-10 my-2 md:my-0">
+                         <button
+                            onClick={() => setActivePage(p => Math.max(0, p - 1))}
+                            disabled={activePage === 0}
+                            className="px-3 py-1 rounded bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-xs font-medium hover:bg-zinc-50 dark:hover:bg-zinc-700 text-zinc-900 dark:text-zinc-100 disabled:opacity-50 transition-colors"
+                         >
+                            ← Пред.
+                         </button>
+                         <span className="text-xs font-semibold text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/80 px-2.5 py-1 rounded border border-zinc-200/50 dark:border-zinc-700/40 min-w-[90px] text-center">
+                            Стр {activePage + 1} из {activeGraph.pages.length}
+                         </span>
+                         <button
+                            onClick={() => setActivePage(p => Math.min(activeGraph.pages.length - 1, p + 1))}
+                            disabled={activePage === activeGraph.pages.length - 1}
+                            className="px-3 py-1 rounded bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-xs font-medium hover:bg-zinc-50 dark:hover:bg-zinc-700 text-zinc-900 dark:text-zinc-100 disabled:opacity-50 transition-colors"
+                         >
+                            След. →
+                         </button>
+                      </div>
+                  ) : (
+                      <div className="md:absolute md:left-1/2 md:-translate-x-1/2"></div>
+                  )}
+
+                  {/* Right: Action Buttons (locked, won't overlap panels) */}
+                  <div className="flex items-center gap-2 flex-wrap z-10 ml-auto">
+                      <button
+                        onClick={() => setViewMode(!viewMode)}
+                        className="flex items-center justify-center p-1.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-md text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition"
+                        title={viewMode ? "Выйти из режима просмотра" : "Режим просмотра (Во весь экран)"}
+                      >
+                        {viewMode ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+                      </button>
+
+                      <button
+                        onClick={() => {
+                            let name = activeGraph?.title || 'graph';
+                            if (activeGraph && activeGraph.pages.length > 1) {
+                                name += `_стр_${activePage + 1}`;
+                            }
+                            downloadSvg(`graph-svg-${activeTab}`, name);
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-md text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-xs font-semibold transition"
+                        title="Скачать SVG"
+                      >
+                        <Code className="w-3.5 h-3.5 text-orange-500" />
+                        <span>SVG</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                            let name = activeGraph?.title || 'graph';
+                            if (activeGraph && activeGraph.pages.length > 1) {
+                                name += `_стр_${activePage + 1}`;
+                            }
+                            downloadPng(`graph-svg-${activeTab}`, name);
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-md text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-xs font-semibold transition"
+                        title="Скачать PNG"
+                      >
+                        <svg className="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                        </svg>
+                        <span>PNG</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                            let name = activeGraph?.title || 'graph';
+                            if (activeGraph && activeGraph.pages.length > 1) {
+                                name += `_стр_${activePage + 1}`;
+                            }
+                            downloadDrawio(name, fontFamily);
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-md text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-xs font-semibold transition"
+                        title="Экспорт в draw.io (.drawio)"
+                      >
+                        <svg className="w-3.5 h-3.5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1-0 1-1-1v-6z" />
+                        </svg>
+                        <span>Draw.io XML</span>
+                      </button>
+
+                      <div className="w-px h-6 bg-zinc-200 dark:bg-zinc-700 mx-1"></div>
+
+                      <button
+                        onClick={() => {
+                            setOverrides({});
+                            setHistory([{}]);
+                            setHistoryIndex(0);
+                            localStorage.removeItem('blockcraft_overrides');
+                            localStorage.removeItem('blockcraft_history');
+                            localStorage.removeItem('blockcraft_historyIndex');
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/30 text-red-600 dark:text-red-400 rounded-md hover:bg-red-100 dark:hover:bg-red-900/40 text-xs font-semibold transition"
+                        title="Сбросить все перемещения узлов"
+                      >
+                        <svg className="w-3.5 h-3.5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                        </svg>
+                        <span>Сбросить кэш</span>
+                      </button>
+                  </div>
+              </div>
           </div>
 
 
@@ -3174,78 +3380,6 @@ const downloadDrawio = (title: string, fontFamily: string) => {
             </div>
           )}
 
-          <div className="absolute top-24 right-4 z-50 flex flex-col gap-2">
-            <button 
-              onClick={() => setViewMode(!viewMode)}
-              className="flex items-center justify-center p-2 bg-white/90 dark:bg-[#232328]/90 backdrop-blur rounded-lg border border-zinc-300 dark:border-zinc-700/80 shadow-sm hover:bg-zinc-50 dark:hover:bg-[#2E2E33] text-zinc-600 dark:text-zinc-300 transition-colors"
-              title={viewMode ? "Выйти из режима просмотра" : "Режим просмотра"}
-            >
-              {viewMode ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
-            </button>
-            <button 
-              onClick={() => {
-                  let name = activeGraph?.title || 'graph';
-                  if (activeGraph && activeGraph.pages.length > 1) {
-                      name += `_стр_${activePage + 1}`;
-                  }
-                  downloadSvg(`graph-svg-${activeTab}`, name);
-              }}
-              className="flex items-center gap-2 justify-center px-3 py-2 bg-white/90 dark:bg-[#232328]/90 backdrop-blur rounded-lg border border-zinc-300 dark:border-zinc-700/80 shadow-sm hover:bg-zinc-50 dark:hover:bg-[#2E2E33] text-zinc-600 dark:text-zinc-300 font-medium text-xs transition-colors"
-              title="Скачать SVG"
-            >
-              <Code className="w-4 h-4" />
-              SVG
-            </button>
-            <button 
-              onClick={() => {
-                  let name = activeGraph?.title || 'graph';
-                  if (activeGraph && activeGraph.pages.length > 1) {
-                      name += `_стр_${activePage + 1}`;
-                  }
-                  downloadPng(`graph-svg-${activeTab}`, name);
-              }}
-              className="flex items-center gap-2 justify-center px-3 py-2 bg-white/90 dark:bg-[#232328]/90 backdrop-blur rounded-lg border border-zinc-300 dark:border-zinc-700/80 shadow-sm hover:bg-zinc-50 dark:hover:bg-[#2E2E33] text-zinc-600 dark:text-zinc-300 font-medium text-xs transition-colors"
-              title="Скачать PNG"
-            >
-              <svg className="w-4 h-4 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-              PNG
-            </button>
-            <button 
-              onClick={() => {
-                  let name = activeGraph?.title || 'graph';
-                  if (activeGraph && activeGraph.pages.length > 1) {
-                      name += `_стр_${activePage + 1}`;
-                  }
-                  downloadDrawio(name, fontFamily);
-              }}
-              className="flex items-center gap-2 justify-center px-3 py-2 bg-white/90 dark:bg-[#232328]/90 backdrop-blur rounded-lg border border-zinc-300 dark:border-zinc-700/80 shadow-sm hover:bg-zinc-50 dark:hover:bg-[#2E2E33] text-zinc-600 dark:text-zinc-300 font-medium text-xs transition-colors"
-              title="Экспорт в draw.io (.drawio)"
-            >
-              <svg className="w-4 h-4 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
-              </svg>
-              <span>Draw.io XML</span>
-            </button>
-            <div className="w-px h-6 bg-zinc-200 dark:bg-zinc-700 mx-1"></div>
-            <button 
-              onClick={() => {
-                  setOverrides({});
-                  setHistory([{}]);
-                  setHistoryIndex(0);
-                  localStorage.removeItem('blockcraft_overrides');
-                  localStorage.removeItem('blockcraft_history');
-                  localStorage.removeItem('blockcraft_historyIndex');
-              }}
-              className="flex items-center gap-2 justify-center px-3 py-2 bg-white/90 dark:bg-[#232328]/90 backdrop-blur rounded-lg border border-red-200 dark:border-red-900/30 text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-red-900/20 font-medium text-xs transition-colors"
-              title="Сбросить все перемещения узлов (решает баг с наложением при вставке нового кода)"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-              <span>Сбросить кэш позиций</span>
-            </button>
-          </div>
-
-          
-
           <div className="flex-1 w-full h-full overflow-y-auto relative z-10 p-4 shrink-0 flex flex-col items-center justify-start">
               {activeGraph && activeGraphPage && (
                 <>
@@ -3255,8 +3389,26 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                     height={activeGraphPage.height} 
                     viewBox={`0 0 ${activeGraphPage.width} ${activeGraphPage.height}`}
                     preserveAspectRatio="xMidYMid meet"
-                    className="filter drop-shadow-md shadow-lg shadow-zinc-200/50 dark:shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)] overflow-visible bg-white dark:bg-[#1E1E24] border border-zinc-100 dark:border-zinc-800/80 p-6 rounded-lg my-4 transition-colors duration-300"
-
+                    className={`filter drop-shadow-md shadow-lg shadow-zinc-200/50 dark:shadow-[0_4px_24px_-4px_rgba(0,0,0,0.5)] overflow-visible bg-white dark:bg-[#1E1E24] border border-zinc-100 dark:border-zinc-800/80 p-6 rounded-lg my-4 transition-colors duration-300 ${isScissorsMode ? 'cursor-cell' : ''}`}
+                    onClick={(e) => {
+                        if (!isScissorsMode || splitMode !== 'manual') return;
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const clickY = e.clientY - rect.top;
+                        const updatedCuts = [...(customCuts[activeTab] || [])];
+                        updatedCuts.push(Math.round(clickY));
+                        const nextCuts = { ...customCuts, [activeTab]: updatedCuts };
+                        setCustomCuts(nextCuts);
+                        localStorage.setItem('blockcraft_custom_cuts', JSON.stringify(nextCuts));
+                    }}
+                    onMouseMove={(e) => {
+                        if (!isScissorsMode || splitMode !== 'manual') return;
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const hoverY = e.clientY - rect.top;
+                        setHoveredY(Math.round(hoverY));
+                    }}
+                    onMouseLeave={() => {
+                        setHoveredY(null);
+                    }}
                   >
                     <defs>
                       <marker id="arrowhead-light" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
@@ -3278,9 +3430,6 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                                 // use 1-indexed to match data structure
                                 let segmentKey = idx + 1;
                                 
-                                let startCircle = { x: seg.startX, y: seg.startY };
-                                let endCircle = { x: seg.endX, y: seg.endY };
-                                
                                 return (
                                    <g key={segmentKey}>
                                        <line 
@@ -3290,12 +3439,13 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                                            strokeWidth="20"
                                            className="pointer-events-auto outline-none cursor-pointer"
                                            onMouseDown={(e) => {
+                                                if (isScissorsMode) return;
                                                 e.stopPropagation();
                                                 setSelectedElement({ type: 'edge', id: edge.id!, segment: segmentKey });
                                            }}
                                        />
                                    </g>
-                               );
+                                );
                            })}
                         </g>
                     ))}
@@ -3305,6 +3455,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                         key={node.id} 
                         className={`cursor-pointer ${selectedElement?.type === 'node' && selectedElement.id === node.id ? 'opacity-70' : 'opacity-100'} transition-opacity`}
                         onMouseDown={(e) => {
+                            if (isScissorsMode) return;
                             e.stopPropagation();
                             setSelectedElement({ type: 'node', id: node.id });
                             setDragState({
@@ -3318,6 +3469,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                             handleNodeClick(node);
                         }}
                         onDoubleClick={(e) => {
+                            if (isScissorsMode) return;
                             e.stopPropagation();
                             setEditingNode({ id: node.id, text: node.text });
                         }}
@@ -3330,6 +3482,102 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                         />
                       </g>
                     ))}
+
+                    {/* Render manual custom cut lines in Scissors Mode */}
+                    {splitMode === 'manual' && (customCuts[activeTab] || []).map((cutY, index) => (
+                        <g key={`cut-line-${index}`} className="group cursor-pointer">
+                            {/* Interactive broad line */}
+                            <line
+                                x1={0}
+                                y1={cutY}
+                                x2={activeGraphPage.width}
+                                y2={cutY}
+                                stroke="transparent"
+                                strokeWidth={24}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    const updatedCuts = (customCuts[activeTab] || []).filter((_, idx) => idx !== index);
+                                    const nextCuts = { ...customCuts, [activeTab]: updatedCuts };
+                                    setCustomCuts(nextCuts);
+                                    localStorage.setItem('blockcraft_custom_cuts', JSON.stringify(nextCuts));
+                                }}
+                            />
+                            {/* Visual cut line */}
+                            <line
+                                x1={0}
+                                y1={cutY}
+                                x2={activeGraphPage.width}
+                                y2={cutY}
+                                stroke="#ef4444"
+                                strokeWidth={2}
+                                strokeDasharray="6,4"
+                            />
+                            {/* Interactive visual button */}
+                            <g
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    const updatedCuts = (customCuts[activeTab] || []).filter((_, idx) => idx !== index);
+                                    const nextCuts = { ...customCuts, [activeTab]: updatedCuts };
+                                    setCustomCuts(nextCuts);
+                                    localStorage.setItem('blockcraft_custom_cuts', JSON.stringify(nextCuts));
+                                }}
+                            >
+                                <rect
+                                    x={10}
+                                    y={cutY - 10}
+                                    width={70}
+                                    height={20}
+                                    rx={4}
+                                    fill="#ef4444"
+                                    className="hover:fill-red-600 transition-colors"
+                                />
+                                <text
+                                    x={45}
+                                    y={cutY + 4}
+                                    textAnchor="middle"
+                                    fill="white"
+                                    fontSize={10}
+                                    fontWeight="bold"
+                                    className="select-none pointer-events-none"
+                                >
+                                    Удалить ✕
+                                </text>
+                            </g>
+                        </g>
+                    ))}
+
+                    {/* Preview line while dragging or hovering with active scissors */}
+                    {isScissorsMode && hoveredY !== null && (
+                        <g className="pointer-events-none">
+                            <line
+                                x1={0}
+                                y1={hoveredY}
+                                x2={activeGraphPage.width}
+                                y2={hoveredY}
+                                stroke="#3b82f6"
+                                strokeWidth={2}
+                                strokeDasharray="4,4"
+                            />
+                            <rect
+                                x={10}
+                                y={hoveredY - 10}
+                                width={85}
+                                height={20}
+                                rx={4}
+                                fill="#3b82f6"
+                            />
+                            <text
+                                x={52}
+                                y={hoveredY + 4}
+                                textAnchor="middle"
+                                fill="white"
+                                fontSize={10}
+                                fontWeight="bold"
+                            >
+                                ✂️ Сделать разрез
+                            </text>
+                        </g>
+                    )}
                   </svg>
                   
                   {editingNode && (
