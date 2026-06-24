@@ -70,12 +70,17 @@ export function cleanIoArgs(args: string): string {
     if (args.includes('for ') && args.includes(' in ')) {
         return args;
     }
+    
+    // Remove end=... and sep=... arguments first
+    let argsClean = args.replace(/\b(end|sep)\s*=\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,)]+)/gi, '');
+    argsClean = argsClean.replace(/,\s*,/g, ',').replace(/^\s*,/, '').replace(/,\s*$/, '').trim();
+
     let extracted: string[] = [];
     
     // Extract variables from python f-strings like f"hello {name:.2f}"
     const fStringRegex = /f(["'])(.*?)\1/gi;
     let match;
-    while ((match = fStringRegex.exec(args)) !== null) {
+    while ((match = fStringRegex.exec(argsClean)) !== null) {
         const inner = match[2];
         const braceRegex = /\{([^}]+)\}/g;
         let bMatch;
@@ -85,7 +90,7 @@ export function cleanIoArgs(args: string): string {
         }
     }
 
-    let cleaned = args;
+    let cleaned = argsClean;
     // Remove triple string literals
     cleaned = cleaned.replace(/f?'''[\s\S]*?'''/gi, '');
     cleaned = cleaned.replace(/f?"""[\s\S]*?"""/gi, '');
@@ -159,8 +164,11 @@ export function consolidateBlocks(nodes: any[]): any[] {
     return res;
 }
 
-export function isSubprogramCall(funcName: string): boolean {
-    let name = funcName.trim();
+export function isSubprogramCall(funcName: string, userDeclaredFunctions?: Set<string>): boolean {
+    let trimmedName = funcName.trim();
+    let hasDot = trimmedName.includes('.');
+    
+    let name = trimmedName;
     if (name.includes('::')) {
         name = name.split('::').pop() || name;
     }
@@ -179,16 +187,27 @@ export function isSubprogramCall(funcName: string): boolean {
         'zip', 'enumerate', 'map', 'filter', 'sorted', 'chr', 'ord', 'hex', 'oct', 'bin', 
         'pow', 'sqrt', 'sin', 'cos', 'tan', 'log', 'log10', 'exp', 'double', 'char', 'string',
         'vector', 'fabs', 'ceil', 'floor', 'size', 'length', 'push_back', 'pop_back', 'insert',
-        'erase', 'begin', 'end', 'clear', 'empty'
+        'erase', 'begin', 'end', 'clear', 'empty', 'print', 'input'
     ]);
 
-    if (NOT_SUBPROGRAMS.has(name)) {
+    const BUILTIN_PYTHON_METHODS = new Set([
+        'append', 'extend', 'insert', 'remove', 'pop', 'clear', 'index', 'count', 'sort', 'reverse', 'copy',
+        'get', 'items', 'keys', 'values', 'update', 'setdefault',
+        'split', 'join', 'strip', 'lstrip', 'rstrip', 'replace', 'find', 'rfind', 'startswith', 'endswith', 'lower', 'upper', 'title', 'format', 'isdigit', 'isalpha', 'isalnum',
+        'add', 'discard', 'union', 'intersection', 'difference',
+        'write', 'read', 'readline', 'readlines', 'close', 'open'
+    ]);
+
+    if (NOT_SUBPROGRAMS.has(name) || BUILTIN_PYTHON_METHODS.has(name)) {
         return false;
     }
 
-    // Class instantiations like Prettytable() starting with uppercase
-    if (/^[A-Z]/.test(name)) {
-        return false;
+    if (userDeclaredFunctions && userDeclaredFunctions.has(name)) {
+        return true;
+    }
+
+    if (hasDot) {
+        return true;
     }
 
     return true;

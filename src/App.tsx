@@ -402,6 +402,59 @@ function preprocessPythonLines(inputLines: LogicalLine[]): LogicalLine[] {
     return outputLines;
 }
 
+function cleanPythonParams(paramsStr: string): string {
+    let parts: string[] = [];
+    let current = '';
+    let pCount = 0, bCount = 0;
+    for (let char of paramsStr) {
+        if (char === '(') pCount++;
+        else if (char === ')') pCount--;
+        else if (char === '[') bCount++;
+        else if (char === ']') bCount--;
+        
+        if (char === ',' && pCount === 0 && bCount === 0) {
+            parts.push(current);
+            current = '';
+        } else {
+            current += char;
+        }
+    }
+    if (current.trim() !== '') {
+        parts.push(current);
+    }
+    
+    let cleanedParts = parts.map(p => {
+        let trimmed = p.trim();
+        let colonIdx = -1;
+        let pC = 0, bC = 0;
+        for (let j = 0; j < trimmed.length; j++) {
+            let char = trimmed[j];
+            if (char === '(') pC++;
+            else if (char === ')') pC--;
+            else if (char === '[') bC++;
+            else if (char === ']') bC--;
+            else if (char === ':' && pC === 0 && bC === 0) {
+                colonIdx = j;
+                break;
+            }
+        }
+        
+        let beforeColon = trimmed;
+        if (colonIdx !== -1) {
+            beforeColon = trimmed.substring(0, colonIdx).trim();
+        }
+        
+        let eqIdx = beforeColon.indexOf('=');
+        if (eqIdx !== -1) {
+            beforeColon = beforeColon.substring(0, eqIdx).trim();
+        }
+        
+        return beforeColon.trim();
+    });
+    
+    return cleanedParts.filter(x => x !== '').join(', ');
+}
+
 export function parsePythonSourceWhole(code: string) {
     let cleanedCode = code.replace(/"""[\s\S]*?"""/g, (match) => {
         return match.split('\n').map(() => '').join('\n');
@@ -461,6 +514,7 @@ export function parsePythonSourceWhole(code: string) {
         let lastSplit = 0;
         let isKeywordLine = !!r.trim().match(/^(if|elif|else|while|for|case|match|def)\b/);
         
+        let pCountLocal = 0, bCountLocal = 0, cCountLocal = 0;
         for (let j = 0; j < r.length; j++) {
             let char = r[j];
             if (inStr) {
@@ -470,7 +524,19 @@ export function parsePythonSourceWhole(code: string) {
                 if (char === '"' || char === "'") {
                     inStr = true;
                     strChar = char;
-                } else if (char === ':' && isKeywordLine) {
+                } else if (char === '(') {
+                    pCountLocal++;
+                } else if (char === ')') {
+                    pCountLocal--;
+                } else if (char === '[') {
+                    bCountLocal++;
+                } else if (char === ']') {
+                    bCountLocal--;
+                } else if (char === '{') {
+                    cCountLocal++;
+                } else if (char === '}') {
+                    cCountLocal--;
+                } else if (char === ':' && isKeywordLine && pCountLocal === 0 && bCountLocal === 0 && cCountLocal === 0) {
                     // Check if there is something after colon
                     let rest = r.substring(j + 1).trim();
                     if (rest !== '') {
@@ -544,6 +610,17 @@ export function parsePythonSourceWhole(code: string) {
     let logicalLineIndices = processedLogicalLines.map(l => l.origIndex);
 
     let functionsAst: {name: string, returnType?: string, ast: ASTNode[]}[] = [];
+    
+    let userDeclaredFunctions = new Set<string>();
+    for (let ln of lines) {
+        let t = ln.trim();
+        if (t.startsWith('def ')) {
+            let m = t.match(/def\s+([a-zA-Z0-9_]+)/);
+            if (m) {
+                userDeclaredFunctions.add(m[1]);
+            }
+        }
+    }
     
     function getIndent(line: string) {
         const match = line.match(/^(\s*)/);
@@ -822,6 +899,10 @@ export function parsePythonSourceWhole(code: string) {
                         if (textContainsEq) {
                             let parts = text.split('=');
                             leftSide = parts[0].trim();
+                            let colonIdx = leftSide.indexOf(':');
+                            if (colonIdx !== -1) {
+                                leftSide = leftSide.substring(0, colonIdx).trim();
+                            }
                             rightSide = parts.slice(1).join('=').trim();
                         }
                         
@@ -846,11 +927,17 @@ export function parsePythonSourceWhole(code: string) {
                             let args = '';
                             if (matchArg) {
                                 prefix = matchArg[1] || '';
+                                if (prefix) {
+                                    let colonIdx = prefix.indexOf(':');
+                                    if (colonIdx !== -1) {
+                                        prefix = prefix.substring(0, colonIdx).trim() + ' = ';
+                                    }
+                                }
                                 funcName = matchArg[2].trim();
                                 args = matchArg[3];
                             }
                             
-                            if (matchArg && isSubprogramCall(funcName)) {
+                            if (matchArg && isSubprogramCall(funcName, userDeclaredFunctions)) {
                                 kind = 'subprogram';
                                 let cleanedArgs = cleanIoArgs(args);
                                 displayText = mathify(`${prefix}${funcName}(${cleanedArgs})`);
@@ -859,7 +946,7 @@ export function parsePythonSourceWhole(code: string) {
                                 if (matchArg) {
                                     let cleanedArgs = cleanIoArgs(args);
                                     displayText = mathify(`${prefix}${funcName}(${cleanedArgs})`);
-                                } else {
+                                        } else {
                                     displayText = mathify(text);
                                 }
                             }
@@ -926,7 +1013,7 @@ export function parsePythonSourceWhole(code: string) {
 
         if (trimmed.startsWith('def ')) {
             let funcNameMatch = trimmed.match(/def\s+([a-zA-Z0-9_]+)\s*\((.*?)\)(?:\s*->\s*(.*?))?:/);
-            let funcName = funcNameMatch ? `${funcNameMatch[1]}(${funcNameMatch[2]})` : 'func';
+            let funcName = funcNameMatch ? `${funcNameMatch[1]}(${cleanPythonParams(funcNameMatch[2])})` : 'func';
             let returnType = funcNameMatch && funcNameMatch[3] ? funcNameMatch[3].trim() : undefined;
             let defIndent = indent;
             
@@ -2086,6 +2173,46 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                     s
                 });
             }
+
+            // Collapse large empty gaps caused by page-split jumps for discarded/reclaimed boundaries
+            if (splitMode === 'auto') {
+                const activeBoundaries = new Set(pageIntervals.map(pi => pi.yMax).filter(y => y !== Infinity));
+                let initialMaxK = Math.floor(maxNodeY / PAGE_H);
+                for (let k = initialMaxK; k >= 1; k--) {
+                    const B = k * PAGE_H;
+                    if (!activeBoundaries.has(B)) {
+                        const nodesBefore = allNodes.filter(n => n.y < B);
+                        const nodesAfter = allNodes.filter(n => n.y >= B);
+                        if (nodesBefore.length > 0 && nodesAfter.length > 0) {
+                            const maxYBefore = Math.max(...nodesBefore.map(n => n.y + (n.height || 64) / 2));
+                            const minYAfter = Math.min(...nodesAfter.map(n => n.y - (n.height || 64) / 2));
+                            const currentGap = minYAfter - maxYBefore;
+                            const desiredGap = 40;
+                            if (currentGap > desiredGap) {
+                                const shiftAmount = currentGap - desiredGap;
+                                allNodes.forEach(n => {
+                                    if (n.y >= B) {
+                                        n.y -= shiftAmount;
+                                    }
+                                });
+                                allEdgesFinal.forEach(e => {
+                                    if (e.segments) {
+                                        e.segments.forEach(seg => {
+                                            if (seg.startY >= B) seg.startY -= shiftAmount;
+                                            if (seg.endY >= B) seg.endY -= shiftAmount;
+                                        });
+                                    }
+                                    if (e.labelPos && e.labelPos.y >= B) {
+                                        e.labelPos.y -= shiftAmount;
+                                    }
+                                });
+                                if (finalY >= B) finalY -= shiftAmount;
+                                if (actualMaxY >= B) actualMaxY -= shiftAmount;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if (pageIntervals.length > 1) {
@@ -2222,61 +2349,201 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 let newSegments: any[] = [];
                 let eInS = false;
                 let hasJumpOut = false;
-                if (e.segments) {
-                    e.segments.forEach(seg => {
-                        let segMinY = Math.min(seg.startY, seg.endY);
-                        let segMaxY = Math.max(seg.startY, seg.endY);
+                
+                if (e.segments && e.segments.length > 0) {
+                    let firstSeg = e.segments[0];
+                    let lastSeg = e.segments[e.segments.length - 1];
+                    
+                    let pageStart = -1;
+                    let pageEnd = -1;
+                    
+                    if (firstSeg && lastSeg) {
+                        const startNode = allNodes.find(n => Math.abs(n.x - firstSeg.startX) < 10 && Math.abs(n.y - firstSeg.startY) <= (n.height || 64) / 2 + 10);
+                        const endNode = allNodes.find(n => Math.abs(n.x - lastSeg.endX) < 10 && Math.abs(n.y - lastSeg.endY) <= (n.height || 64) / 2 + 10);
                         
-                        if (segMaxY < yMin || segMinY > yMax) return; 
+                        const checkStartY = startNode ? startNode.y : firstSeg.startY;
+                        const checkEndY = endNode ? endNode.y : lastSeg.endY;
                         
-                        let sy = seg.startY;
-                        let ey = seg.endY;
-                        
-                        let isDownward = sy <= ey;
-                        
-                        let clipSy = sy - yMin + SHIFT;
-                        let clipEy = ey - yMin + SHIFT;
-                        
-                        if (isDownward) {
-                            if (sy <= yMin && ey >= yMin) { 
-                               clipSy = 60; 
-                               let k = `in_${Math.round(seg.startX)}_${s-1}_${s}`;
-                               if (!jumpMap.has(k)) { jumpMap.set(k, String.fromCharCode(jumpCounter++)); }
-                               sNodes.push({ id: `jump_in_${k}`, type: 'circle', text: jumpMap.get(k)!, x: seg.startX, y: clipSy - 20, height: 40 });
-                            }
-                            if (ey >= yMax && sy <= yMax) { 
-                               clipEy = jumpOutY - 20; 
-                               let k = `in_${Math.round(seg.startX)}_${s}_${s+1}`;
-                               if (!jumpMap.has(k)) { jumpMap.set(k, String.fromCharCode(jumpCounter++)); }
-                               sNodes.push({ id: `jump_out_${k}`, type: 'circle', text: jumpMap.get(k)!, x: seg.endX, y: clipEy + 20, height: 40 });
-                               hasJumpOut = true;
-                            }
-                        } else {
-                            if (sy >= yMax && ey <= yMax) { 
-                               clipSy = jumpOutY - 20; 
-                               let k = `up_${Math.round(seg.startX)}_${s+1}_${s}`;
-                               if (!jumpMap.has(k)) { jumpMap.set(k, String.fromCharCode(jumpCounter++)); }
-                               sNodes.push({ id: `jump_in_up_${k}`, type: 'circle', text: jumpMap.get(k)!, x: seg.startX, y: clipSy + 20, height: 40 });
-                            }
-                            if (ey <= yMin && sy >= yMin) { 
-                               clipEy = 60; 
-                               let k = `up_${Math.round(seg.startX)}_${s}_${s-1}`;
-                               if (!jumpMap.has(k)) { jumpMap.set(k, String.fromCharCode(jumpCounter++)); }
-                               sNodes.push({ id: `jump_out_up_${k}`, type: 'circle', text: jumpMap.get(k)!, x: seg.endX, y: clipEy - 20, height: 40 });
-                               hasJumpOut = true;
-                            }
-                        }
-                        
-                        if (Math.abs(clipSy - clipEy) > 0.1 || Math.abs(seg.startX - seg.endX) > 0.1) {
-                            newSegments.push({
-                                startX: seg.startX,
-                                startY: clipSy,
-                                endX: seg.endX,
-                                endY: clipEy
+                        pageStart = pageIntervals.findIndex(pi => checkStartY >= pi.yMin && checkStartY < pi.yMax);
+                        pageEnd = pageIntervals.findIndex(pi => checkEndY >= pi.yMin && checkEndY < pi.yMax);
+                    }
+                    
+                    if (pageStart === -1 && firstSeg) {
+                        pageStart = pageIntervals.findIndex(pi => firstSeg.startY >= pi.yMin && firstSeg.startY < pi.yMax);
+                    }
+                    if (pageEnd === -1 && lastSeg) {
+                        pageEnd = pageIntervals.findIndex(pi => lastSeg.endY >= pi.yMin && lastSeg.endY < pi.yMax);
+                    }
+                    if (pageStart === -1) pageStart = 0;
+                    if (pageEnd === -1) pageEnd = pageIntervals.length - 1;
+
+                    if (pageStart === pageEnd) {
+                        if (s === pageStart) {
+                            e.segments.forEach(seg => {
+                                let clipSy = seg.startY - yMin + SHIFT;
+                                let clipEy = seg.endY - yMin + SHIFT;
+                                if (Math.abs(clipSy - clipEy) > 0.1 || Math.abs(seg.startX - seg.endX) > 0.1) {
+                                    newSegments.push({
+                                        startX: seg.startX,
+                                        startY: clipSy,
+                                        endX: seg.endX,
+                                        endY: clipEy
+                                    });
+                                }
+                                eInS = true;
                             });
                         }
-                        eInS = true;
-                    });
+                    } else if (pageStart < pageEnd) { // Downward transition
+                        if (s === pageStart) {
+                            let hasClipped = false;
+                            e.segments.forEach(seg => {
+                                if (hasClipped) return;
+                                
+                                let clipSy = seg.startY - yMin + SHIFT;
+                                let clipEy = seg.endY - yMin + SHIFT;
+                                if (seg.endY >= yMax) {
+                                    clipEy = jumpOutY - 20;
+                                    let k = `in_${Math.round(seg.startX)}_${s}_${s+1}`;
+                                    if (!jumpMap.has(k)) { jumpMap.set(k, String.fromCharCode(jumpCounter++)); }
+                                    sNodes.push({ id: `jump_out_${k}`, type: 'circle', text: jumpMap.get(k)!, x: seg.endX, y: clipEy + 20, height: 40 });
+                                    hasJumpOut = true;
+                                    hasClipped = true;
+                                }
+                                if (Math.abs(clipSy - clipEy) > 0.1 || Math.abs(seg.startX - seg.endX) > 0.1) {
+                                    newSegments.push({
+                                        startX: seg.startX,
+                                        startY: clipSy,
+                                        endX: seg.endX,
+                                        endY: clipEy
+                                    });
+                                }
+                                eInS = true;
+                            });
+                        } else if (s === pageEnd) {
+                            let started = false;
+                            e.segments.forEach(seg => {
+                                if (!started) {
+                                    if (seg.endY >= yMin || seg.startY <= yMin) {
+                                        started = true;
+                                    }
+                                }
+                                if (!started) return;
+                                
+                                let clipSy = seg.startY - yMin + SHIFT;
+                                let clipEy = seg.endY - yMin + SHIFT;
+                                if (seg.startY <= yMin) {
+                                    clipSy = 60;
+                                    let k = `in_${Math.round(seg.startX)}_${s-1}_${s}`;
+                                    if (!jumpMap.has(k)) { jumpMap.set(k, String.fromCharCode(jumpCounter++)); }
+                                    sNodes.push({ id: `jump_in_${k}`, type: 'circle', text: jumpMap.get(k)!, x: seg.startX, y: clipSy - 20, height: 40 });
+                                }
+                                if (Math.abs(clipSy - clipEy) > 0.1 || Math.abs(seg.startX - seg.endX) > 0.1) {
+                                    newSegments.push({
+                                        startX: seg.startX,
+                                        startY: clipSy,
+                                        endX: seg.endX,
+                                        endY: clipEy
+                                    });
+                                }
+                                eInS = true;
+                            });
+                        } else if (pageStart < s && s < pageEnd) {
+                            let clipSy = 60;
+                            let clipEy = jumpOutY - 20;
+                            
+                            let kIn = `in_${Math.round(firstSeg.startX)}_${s-1}_${s}`;
+                            if (!jumpMap.has(kIn)) { jumpMap.set(kIn, String.fromCharCode(jumpCounter++)); }
+                            sNodes.push({ id: `jump_in_${kIn}`, type: 'circle', text: jumpMap.get(kIn)!, x: firstSeg.startX, y: clipSy - 20, height: 40 });
+                            
+                            let kOut = `in_${Math.round(firstSeg.startX)}_${s}_${s+1}`;
+                            if (!jumpMap.has(kOut)) { jumpMap.set(kOut, String.fromCharCode(jumpCounter++)); }
+                            sNodes.push({ id: `jump_out_${kOut}`, type: 'circle', text: jumpMap.get(kOut)!, x: firstSeg.startX, y: clipEy + 20, height: 40 });
+                            hasJumpOut = true;
+
+                            newSegments.push({
+                                startX: firstSeg.startX,
+                                startY: clipSy,
+                                endX: firstSeg.startX,
+                                endY: clipEy
+                            });
+                            eInS = true;
+                        }
+                    } else { // Upward transition
+                        if (s === pageStart) {
+                            let hasClipped = false;
+                            e.segments.forEach(seg => {
+                                if (hasClipped) return;
+                                
+                                let clipSy = seg.startY - yMin + SHIFT;
+                                let clipEy = seg.endY - yMin + SHIFT;
+                                if (seg.endY <= yMin) {
+                                    clipEy = 60;
+                                    let k = `up_${Math.round(seg.startX)}_${s}_${s-1}`;
+                                    if (!jumpMap.has(k)) { jumpMap.set(k, String.fromCharCode(jumpCounter++)); }
+                                    sNodes.push({ id: `jump_out_up_${k}`, type: 'circle', text: jumpMap.get(k)!, x: seg.endX, y: clipEy - 20, height: 40 });
+                                    hasJumpOut = true;
+                                    hasClipped = true;
+                                }
+                                if (Math.abs(clipSy - clipEy) > 0.1 || Math.abs(seg.startX - seg.endX) > 0.1) {
+                                    newSegments.push({
+                                        startX: seg.startX,
+                                        startY: clipSy,
+                                        endX: seg.endX,
+                                        endY: clipEy
+                                    });
+                                }
+                                eInS = true;
+                            });
+                        } else if (s === pageEnd) {
+                            let started = false;
+                            e.segments.forEach(seg => {
+                                if (!started) {
+                                    if (seg.endY <= yMax || seg.startY >= yMax) {
+                                        started = true;
+                                    }
+                                }
+                                if (!started) return;
+                                
+                                let clipSy = seg.startY - yMin + SHIFT;
+                                let clipEy = seg.endY - yMin + SHIFT;
+                                if (seg.startY >= yMax) {
+                                    clipSy = jumpOutY - 20;
+                                    let k = `up_${Math.round(seg.startX)}_${s+1}_${s}`;
+                                    if (!jumpMap.has(k)) { jumpMap.set(k, String.fromCharCode(jumpCounter++)); }
+                                    sNodes.push({ id: `jump_in_up_${k}`, type: 'circle', text: jumpMap.get(k)!, x: seg.startX, y: clipSy + 20, height: 40 });
+                                }
+                                if (Math.abs(clipSy - clipEy) > 0.1 || Math.abs(seg.startX - seg.endX) > 0.1) {
+                                    newSegments.push({
+                                        startX: seg.startX,
+                                        startY: clipSy,
+                                        endX: seg.endX,
+                                        endY: clipEy
+                                    });
+                                }
+                                eInS = true;
+                            });
+                        } else if (pageEnd < s && s < pageStart) {
+                            let clipSy = jumpOutY - 20;
+                            let clipEy = 60;
+
+                            let kIn = `up_${Math.round(firstSeg.startX)}_${s+1}_${s}`;
+                            if (!jumpMap.has(kIn)) { jumpMap.set(kIn, String.fromCharCode(jumpCounter++)); }
+                            sNodes.push({ id: `jump_in_up_${kIn}`, type: 'circle', text: jumpMap.get(kIn)!, x: firstSeg.startX, y: clipSy + 20, height: 40 });
+
+                            let kOut = `up_${Math.round(firstSeg.startX)}_${s}_${s-1}`;
+                            if (!jumpMap.has(kOut)) { jumpMap.set(kOut, String.fromCharCode(jumpCounter++)); }
+                            sNodes.push({ id: `jump_out_up_${kOut}`, type: 'circle', text: jumpMap.get(kOut)!, x: firstSeg.startX, y: clipEy - 20, height: 40 });
+                            hasJumpOut = true;
+
+                            newSegments.push({
+                                startX: firstSeg.startX,
+                                startY: clipSy,
+                                endX: firstSeg.startX,
+                                endY: clipEy
+                            });
+                            eInS = true;
+                        }
+                    }
                 }
                 
                 if (eInS && newSegments.length > 0) {
@@ -2402,8 +2669,8 @@ function splitTextIntoLines(text: string, maxCharsPerLine: number = 28): string[
   const lines: string[] = [];
   let currentLine = '';
   
-  // More intelligent tokenization for code: separates variables, numbers, operators, Strings
-  const tokens = text.match(/[\wА-Яа-я]+|["'].*?["']|[^\w\sА-Яа-я"']+|\s+/g) || [text];
+  // More intelligent tokenization for code: separates variables, numbers, operators, Strings including cyrillic/extended chars
+  const tokens = text.match(/[\wА-Яа-яёЁІіЇїЄєҐґ]+|["'].*?["']|[^\w\sА-Яа-яёЁІіЇїЄєҐґ"']+|\s+/g) || [text];
   
   for (const token of tokens) {
     if (token.match(/^\s+$/)) {
