@@ -375,6 +375,7 @@ function preprocessPythonLines(inputLines: LogicalLine[]): LogicalLine[] {
                     cleanPeek === 'else'
                 )) {
                     i++;
+                    
                     while (i < inputLines.length) {
                         let innerPeekLogical = inputLines[i];
                         let innerPeek = innerPeekLogical.text;
@@ -382,7 +383,8 @@ function preprocessPythonLines(inputLines: LogicalLine[]): LogicalLine[] {
                             i++;
                             continue;
                         }
-                        if (getLineIndent(innerPeek) > tryIndent) {
+                        let innerIndent = getLineIndent(innerPeek);
+                        if (innerIndent > tryIndent) {
                             i++;
                         } else {
                             break;
@@ -670,8 +672,8 @@ export function parsePythonSourceWhole(code: string) {
                 }
                 else if (text.startsWith('with ')) {
                     let matchingIndex = myLinesIndices ? myLinesIndices[i] : undefined;
-                    let withMatch = text.match(/^with\s+open\((.*?)\)(?:\s+as\s+(.*?))?:/);
-                    if (!withMatch) withMatch = text.match(/^with\s+open\((.*?)\):/);
+                    let withMatch = text.match(/^with\s+open\((.*?)\)(?:\s+as\s+(.*?))?(?::)?$/);
+                    if (!withMatch) withMatch = text.match(/^with\s+open\((.*?)\)(?::)?$/);
                     
                     let fileAction = 'чтения';
                     let fileName = '...';
@@ -1281,9 +1283,11 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 
                 let outY = currentY + h/2;
                 if (node.text === 'continue') {
-                    // Do not push to loopContinues or loopBreaks so that no line goes down from continue
-                } else {
+                    loopContinues.push({x: cx, y: outY, from: {x: cx, y: outY}});
+                } else if (node.text === 'break') {
                     loopBreaks.push({x: cx, y: outY, from: {x: cx, y: outY}});
+                } else {
+                    // Should not happen as we checked for continue/break
                 }
                 
                 inPts = [];
@@ -1718,7 +1722,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 let inBodyPts = [{x: cx, y: currentY + h/2}];
                 let bodyRes = layout(node.body, cx, currentY + h/2 + Y_MARGIN + (node.body.length > 0 ? getASTNodeHeight(node.body[0])/2 : 0), inBodyPts, false, bBreaks, bConts);
                 
-                let mergeY = bodyRes.finalY;
+                let mergeY = bodyRes.finalY - 15;
                 let endText = node.closeCondition;
                 let endH = getNodeHeight(endText, 'process');
                 let endY = mergeY + 15 + endH/2;
@@ -1729,19 +1733,29 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                         const px = (p as any).limitX || p.x;
                         allEdges.push({ 
                             points: [(p as any).from, {x: px, y: (p as any).from.y}, {x: px, y: mergeY}, {x: cx, y: mergeY}], 
-                            fromNodeId: (p as any).fromNodeId, toNodeId: node.id + '_end'
+                            fromNodeId: (p as any).fromNodeId, toNodeId: node.id + '_end',
+                            noArrow: true
                         });
                         mergedPaths = true;
+                    } else {
+                        if (Math.abs(p.x - cx) >= 1) {
+                            allEdges.push({ points: [p, {x: p.x, y: mergeY}, {x: cx, y: mergeY}], fromNodeId: (p as any).fromNodeId, toNodeId: node.id + '_end', noArrow: true });
+                            mergedPaths = true;
+                        } else {
+                            allEdges.push({ points: [p, {x: cx, y: mergeY}], fromNodeId: (p as any).fromNodeId, toNodeId: node.id + '_end', noArrow: true });
+                            mergedPaths = true;
+                        }
                     }
                 }
-                if (!mergedPaths && node.body.length === 0) {
-                    allEdges.push({
-                        points: [{x: cx, y: currentY + h/2}, {x: cx, y: endY - endH/2}],
-                        toNodeId: node.id + '_end'
-                    });
-                } else if (!mergedPaths) {
+                
+                if (mergedPaths) {
                     allEdges.push({
                         points: [{x: cx, y: mergeY}, {x: cx, y: endY - endH/2}],
+                        toNodeId: node.id + '_end'
+                    });
+                } else if (node.body.length === 0) {
+                    allEdges.push({
+                        points: [{x: cx, y: currentY + h/2}, {x: cx, y: endY - endH/2}],
                         toNodeId: node.id + '_end'
                     });
                 }
@@ -1752,7 +1766,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 if (bBreaks.length > 0) loopBreaks.push(...bBreaks);
                 if (bConts.length > 0) loopContinues.push(...bConts);
                 
-                currentY = endY + endH/2;
+                currentY = endY + endH/2 + Y_MARGIN + (nextH ? nextH/2 : 0);
                 maxReachedY = Math.max(maxReachedY, currentY);
             } else if (node.type === 'for') {
                 allNodes.push({ id: node.id, type: 'loop_begin', text: node.condition, x: cx, y: currentY, height: h, lineIndex: node.lineIndex });
@@ -1781,10 +1795,10 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                     currentY += h/2 + Y_MARGIN;
                 }
                 
-                let mergeY = currentY + Y_MARGIN;
+                let mergeY = currentY + 5;
                 
                 let rightCorridor = cx + Math.max(node.rightW || NODE_WIDTH, NODE_WIDTH * 2) - X_SEP/2 + 20;
-                let contY = currentY + 15;
+                let contY = currentY + 5;
                 for (let c of bContinues) {
                     allEdges.push({
                         points: [c, {x: c.x, y: c.y + 15}, {x: rightCorridor, y: c.y + 15}, {x: rightCorridor, y: contY}, {x: cx, y: contY}],
@@ -2081,37 +2095,67 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 let yMin = interval ? interval.yMin : 0;
                 let lastPageNodes = allNodes.filter(n => n.y >= yMin && n.y < yB);
 
-                allEdgesFinal.forEach(e1 => {
-                    if (!e1.segments || e1.segments.length === 0) return;
-                    let startY = e1.segments[0].startY;
-                    let lastSeg = e1.segments[e1.segments.length - 1];
+                let mergePointsToMove = new Map<string, {cx: number, cy: number, edgesIn: any[], edgesOut: any[]}>();
+
+                allEdgesFinal.forEach(e => {
+                    if (!e.segments || e.segments.length === 0) return;
+                    let lastSeg = e.segments[e.segments.length - 1];
                     let mergeY = lastSeg.endY;
                     let cx = lastSeg.endX;
+                    let k = `${cx}_${mergeY}`;
 
-                    if (startY < yB && mergeY >= yB) {
-                        allEdgesFinal.forEach(e2 => {
-                            if (e1.id === e2.id) return;
-                            if (!e2.segments || e2.segments.length === 0) return;
-                            let e2FirstSeg = e2.segments[0];
+                    if (!mergePointsToMove.has(k)) {
+                        mergePointsToMove.set(k, { cx, cy: mergeY, edgesIn: [], edgesOut: [] });
+                    }
+                    mergePointsToMove.get(k)!.edgesIn.push(e);
+                });
 
-                            if (Math.abs(e2FirstSeg.startX - cx) < 2 && Math.abs(e2FirstSeg.startY - mergeY) < 2) {
-                                let maxNodeBottom = lastPageNodes.length > 0 ? Math.max(...lastPageNodes.map(n => n.y + (n.height || 64)/2)) : startY;
-                                let newY = Math.max(startY + 20, maxNodeBottom + 15);
-                                if (newY >= yB - 25) {
-                                    newY = yB - 45;
-                                }
-                                if (newY < yB) {
-                                    e1.segments!.forEach(seg => {
-                                        if (Math.abs(seg.startY - mergeY) < 2) seg.startY = newY;
-                                        if (Math.abs(seg.endY - mergeY) < 2) seg.endY = newY;
-                                    });
-                                    e2.segments!.forEach(seg => {
-                                        if (Math.abs(seg.startY - mergeY) < 2) seg.startY = newY;
-                                        if (Math.abs(seg.endY - mergeY) < 2) seg.endY = newY;
-                                    });
-                                }
+                allEdgesFinal.forEach(e => {
+                    if (!e.segments || e.segments.length === 0) return;
+                    let firstSeg = e.segments[0];
+                    let k = `${firstSeg.startX}_${firstSeg.startY}`;
+                    if (mergePointsToMove.has(k)) {
+                        mergePointsToMove.get(k)!.edgesOut.push(e);
+                    }
+                });
+
+                mergePointsToMove.forEach(info => {
+                    let { cx, cy, edgesIn, edgesOut } = info;
+                    if (cy >= yB && cy < yB + 80) {
+                        let allFromPrevPage = true;
+                        let maxStartY = 0;
+                        let isRelevant = false;
+                        
+                        edgesIn.forEach(e => {
+                            let sy = e.segments![0].startY;
+                            if (sy >= yB) allFromPrevPage = false;
+                            maxStartY = Math.max(maxStartY, sy);
+                            if (e.segments!.length >= 2) {
+                                let prevSeg = e.segments![e.segments!.length - 2];
+                                if (prevSeg.startY < yB) isRelevant = true;
                             }
                         });
+
+                        // We only care if there's at least one vertical segment coming from previous page
+                        if (edgesIn.length > 0 && allFromPrevPage && isRelevant) {
+                            let maxNodeBottom = lastPageNodes.length > 0 ? Math.max(...lastPageNodes.map(n => n.y + (n.height || 64)/2)) : maxStartY;
+                            let newY = Math.max(maxStartY + 20, maxNodeBottom + 15);
+                            
+                            if (newY < yB - 5) {
+                                edgesIn.forEach(e => {
+                                    e.segments!.forEach(seg => {
+                                        if (Math.abs(seg.startY - cy) < 2) seg.startY = newY;
+                                        if (Math.abs(seg.endY - cy) < 2) seg.endY = newY;
+                                    });
+                                });
+                                edgesOut.forEach(e => {
+                                    e.segments!.forEach(seg => {
+                                        if (Math.abs(seg.startY - cy) < 2) seg.startY = newY;
+                                        if (Math.abs(seg.endY - cy) < 2) seg.endY = newY;
+                                    });
+                                });
+                            }
+                        }
                     }
                 });
             });
@@ -3257,7 +3301,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                                   <span>✂️</span>
                                   <span>{isScissorsMode ? 'Ножницы: АКТИВНЫ (Нажмите на схему)' : 'Включить Ножницы'}</span>
                               </button>
-                              {isScissorsMode && (customCuts[activeTab] || []).length > 0 && (
+                              {(customCuts[activeTab] || []).length > 0 && (
                                   <button
                                       onClick={() => {
                                           const updated = { ...customCuts, [activeTab]: [] };
@@ -3413,6 +3457,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                         const nextCuts = { ...customCuts, [activeTab]: updatedCuts };
                         setCustomCuts(nextCuts);
                         localStorage.setItem('blockcraft_custom_cuts', JSON.stringify(nextCuts));
+                        setIsScissorsMode(false);
                     }}
                     onMouseMove={(e) => {
                         if (!isScissorsMode || splitMode !== 'manual') return;

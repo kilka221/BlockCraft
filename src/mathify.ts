@@ -120,7 +120,7 @@ export function consolidateBlocks(nodes: any[]): any[] {
                 node.defaultBlock = consolidateBlocks(node.defaultBlock);
             }
             res.push(node);
-        } else if (node.type === 'while' || node.type === 'for') {
+        } else if (node.type === 'while' || node.type === 'for' || node.type === 'with') {
             node.body = consolidateBlocks(node.body);
             res.push(node);
         } else if (node.type === 'stmt') {
