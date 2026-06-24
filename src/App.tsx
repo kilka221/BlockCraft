@@ -374,21 +374,42 @@ function preprocessPythonLines(inputLines: LogicalLine[]): LogicalLine[] {
                     cleanPeek.startsWith('finally') || 
                     cleanPeek === 'else'
                 )) {
+                    let isFinally = cleanPeek.startsWith('finally');
                     i++;
+                    
+                    let finallyBlockLines: LogicalLine[] = [];
+                    let firstFinallyInnerIndent = -1;
                     
                     while (i < inputLines.length) {
                         let innerPeekLogical = inputLines[i];
                         let innerPeek = innerPeekLogical.text;
                         if (innerPeek.trim() === '') {
+                            if (isFinally) finallyBlockLines.push(innerPeekLogical);
                             i++;
                             continue;
                         }
                         let innerIndent = getLineIndent(innerPeek);
                         if (innerIndent > tryIndent) {
+                            if (isFinally) {
+                                if (firstFinallyInnerIndent === -1) {
+                                    firstFinallyInnerIndent = innerIndent;
+                                }
+                                let shift = firstFinallyInnerIndent - tryIndent;
+                                let text = innerPeek;
+                                if (shift > 0) {
+                                    let newIndent = Math.max(0, innerIndent - shift);
+                                    text = ' '.repeat(newIndent) + innerPeek.trim();
+                                }
+                                finallyBlockLines.push({ text, origIndex: innerPeekLogical.origIndex });
+                            }
                             i++;
                         } else {
                             break;
                         }
+                    }
+                    if (isFinally && finallyBlockLines.length > 0) {
+                        let processedFinallyBlock = preprocessPythonLines(finallyBlockLines);
+                        outputLines.push(...processedFinallyBlock);
                     }
                 } else {
                     break;
@@ -645,6 +666,7 @@ export function parsePythonSourceWhole(code: string) {
     let i = 0;
     let mainCodeLines: {line: string, index: number}[] = [];
     let idCounter = 1;
+    let fileVarMap = new Map<string, string>();
 
     function parseLinesAsBlock(myLines: string[], expectedIndent: number, currentFuncName?: string, myLinesIndices?: number[]) {
         let i = 0;
@@ -810,9 +832,15 @@ export function parsePythonSourceWhole(code: string) {
                     let displayText = text;
 
                     if (text.includes('open(')) {
+                        const assignMatch = text.match(/^([a-zA-Z0-9_]+)\s*=\s*/);
                         const openMatch = text.match(/open\s*\(\s*([^,\s)]+)/);
                         let filename = openMatch ? openMatch[1].trim() : 'файл';
                         filename = filename.replace(/^['"]|['"]$/g, '');
+                        
+                        if (assignMatch) {
+                            const varName = assignMatch[1].trim();
+                            fileVarMap.set(varName, filename);
+                        }
                         
                         const isWrite = /mode\s*=\s*['"][wa]/.test(text) || /['"][wa]['"]/.test(text);
                         if (isWrite) {
@@ -822,15 +850,22 @@ export function parsePythonSourceWhole(code: string) {
                             kind = 'process';
                             displayText = `Открыть файл ${filename} для чтения`;
                         }
+                    } else if (text.match(/^([a-zA-Z0-9_]+)\.close(?:\s*\(\s*\))?$/)) {
+                        const closeMatch = text.match(/^([a-zA-Z0-9_]+)\.close(?:\s*\(\s*\))?$/);
+                        const varName = closeMatch ? closeMatch[1] : 'файл';
+                        let filename = fileVarMap.get(varName) || varName;
+                        kind = 'process';
+                        displayText = `Закрытие файла ${filename}`;
                     } else if (text.includes('.write(') || text.includes('writer.writerow') || text.includes('writer.writerows')) {
                         kind = 'io';
-                        const fileVarMatch = text.match(/^([a-zA-Z0-9_]+)\.write/);
+                        const fileVarMatch = text.match(/([a-zA-Z0-9_]+)\.write/);
                         const fileVar = fileVarMatch ? fileVarMatch[1] : '';
+                        const filename = fileVarMap.get(fileVar) || fileVar;
                         const writeMatch = text.match(/\.write\s*\((.*?)\)/);
                         if (writeMatch) {
-                            displayText = `Запись в файл${fileVar ? ' ' + fileVar : ''}: ${mathify(writeMatch[1].trim())}`;
+                            displayText = `Запись в файл ${filename}: ${mathify(writeMatch[1].trim())}`;
                         } else {
-                            displayText = `Запись в файл${fileVar ? ' ' + fileVar : ''}`;
+                            displayText = `Запись в файл ${filename}`;
                         }
                     } else if (text.includes('.read') || text.includes('csv.reader(') || text.includes('json.load(')) {
                         kind = 'io';
@@ -838,12 +873,13 @@ export function parsePythonSourceWhole(code: string) {
                         let varName = matchAssign ? matchAssign[1].trim() : '';
                         let fileVarMatch = text.match(/([a-zA-Z0-9_]+)\.read/);
                         let fileVar = fileVarMatch ? fileVarMatch[1] : '';
+                        let filename = fileVarMap.get(fileVar) || fileVar;
                         if (text.includes('csv.reader(')) {
                             displayText = `Чтение CSV данных${varName ? ': ' + varName : ''}`;
                         } else if (text.includes('json.load(')) {
                             displayText = `Чтение JSON данных${varName ? ': ' + varName : ''}`;
                         } else {
-                            displayText = `Чтение из файла${fileVar ? ' ' + fileVar : ''}${varName ? ': ' + varName : ''}`;
+                            displayText = `Чтение из файла ${filename}${varName ? ': ' + varName : ''}`;
                         }
                     } else if (/input\s*\(/.test(text)) {
                         kind = 'io';
