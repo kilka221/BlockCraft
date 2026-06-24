@@ -131,30 +131,35 @@ export function consolidateBlocks(nodes: any[]): any[] {
         } else if (node.type === 'stmt') {
             // merge connected IOs
             if (node.kind === 'io') {
-                let ioType = node.text.startsWith('Ввод') ? 'Ввод' : 'Вывод';
-                let vars = [node.text.replace(/^.*?:\s*/, '').replace(/^(Ввод данных|Вывод данных)$/, '').trim()];
-                
-                while (i + 1 < nodes.length) {
-                    let next = nodes[i+1];
-                    if (next.type === 'stmt' && next.kind === 'io') {
-                        let nextIoType = next.text.startsWith('Ввод') ? 'Ввод' : 'Вывод';
-                        if (nextIoType === ioType) {
-                            let nextVars = next.text.replace(/^.*?:\s*/, '').replace(/^(Ввод данных|Вывод данных)$/, '').trim();
-                            if (nextVars) vars.push(nextVars);
-                            i++; // consume
+                if (node.text.startsWith('Ввод') || node.text.startsWith('Вывод')) {
+                    let ioType = node.text.startsWith('Ввод') ? 'Ввод' : 'Вывод';
+                    let vars = [node.text.replace(/^.*?:\s*/, '').replace(/^(Ввод данных|Вывод данных)$/, '').trim()];
+                    
+                    while (i + 1 < nodes.length) {
+                        let next = nodes[i+1];
+                        if (next.type === 'stmt' && next.kind === 'io' && (next.text.startsWith('Ввод') || next.text.startsWith('Вывод'))) {
+                            let nextIoType = next.text.startsWith('Ввод') ? 'Ввод' : 'Вывод';
+                            if (nextIoType === ioType) {
+                                let nextVars = next.text.replace(/^.*?:\s*/, '').replace(/^(Ввод данных|Вывод данных)$/, '').trim();
+                                if (nextVars) vars.push(nextVars);
+                                i++; // consume
+                            } else {
+                                break;
+                            }
                         } else {
                             break;
                         }
-                    } else {
-                        break;
                     }
-                }
-                vars = vars.filter(v => v);
-                if (vars.length > 0) {
-                    node.text = `${ioType}: ${vars.join(', ')}`;
-                    res.push(node);
+                    vars = vars.filter(v => v);
+                    if (vars.length > 0) {
+                        node.text = `${ioType}: ${vars.join(', ')}`;
+                        res.push(node);
+                    } else {
+                        node.text = `${ioType} данных`;
+                        res.push(node);
+                    }
                 } else {
-                    // skip empty print line
+                    res.push(node);
                 }
             } else {
                 res.push(node);

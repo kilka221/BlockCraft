@@ -881,11 +881,11 @@ export function parsePythonSourceWhole(code: string) {
                         } else {
                             displayText = `Чтение из файла ${filename}${varName ? ': ' + varName : ''}`;
                         }
-                    } else if (/input\s*\(/.test(text)) {
+                    } else if (/\binput\s*\(/.test(text) || text.includes('_input(')) {
                         kind = 'io';
-                        let match = text.match(/^([a-zA-Z0-9_]+)\s*=\s*(?:[a-zA-Z0-9_]*\s*\(\s*)?input/);
+                        let match = text.match(/^([a-zA-Z0-9_]+)\s*=\s*/);
                         if (match) {
-                             displayText = `Ввод:\n${match[1]}`;
+                             displayText = `Ввод: ${match[1]}`;
                         } else {
                              displayText = `Ввод данных`;
                         }
