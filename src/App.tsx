@@ -881,7 +881,7 @@ export function parsePythonSourceWhole(code: string) {
                         } else {
                             displayText = `Чтение из файла ${filename}${varName ? ': ' + varName : ''}`;
                         }
-                    } else if (/\binput\s*\(/.test(text) || text.includes('_input(')) {
+                    } else if (/\binput\s*\(/.test(text)) {
                         kind = 'io';
                         let match = text.match(/^([a-zA-Z0-9_]+)\s*=\s*/);
                         if (match) {
@@ -1148,7 +1148,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
 
     function blockTerminates(nodes: ASTNode[]): boolean {
         for (let node of nodes) {
-            if (node.type === 'stmt' && (node.kind === 'end' || node.text === 'continue' || node.text === 'break')) {
+            if (node.type === 'stmt' && node.kind === 'end') {
                 return true;
             }
             if (node.type === 'if') {
@@ -1283,6 +1283,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
     
     computeWidthsMulti(ast);
 
+    let disablePagination = true;
     let allNodes: FlowNode[] = [];
     let allEdges: FlowEdge[] = [];
     
@@ -1331,7 +1332,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
             // "запрети чтобы на странице был один блок ... пусть лучше предыдущая страница будет длиннее"
             // If we are at the root level and the rest of the nodes are small enough to just extend the page, skip page breaking.
             let estRemaining = isRoot ? estimateHeight(nodes.slice(i)) : Infinity;
-            const allowPagination = (splitMode === 'auto') && !(isRoot && estRemaining < 800);
+            const allowPagination = !disablePagination && (splitMode === 'auto') && !(isRoot && estRemaining < 800);
             
             if (allowPagination) {
                 // if even the node shape itself doesn't fit, push it to next page
@@ -1360,64 +1361,6 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
             }
 
             maxReachedY = Math.max(maxReachedY, currentY);
-
-            if (node.type === 'stmt' && (node.text === 'continue' || node.text === 'break')) {
-                const targetPoint = { x: cx, y: currentY - h/2 };
-                const mergeY = targetPoint.y - 20;
-
-                let incomingLabel: string | undefined = undefined;
-                let incomingLabelPos: { x: number, y: number } | undefined = undefined;
-                let hasZeroLengthForLabel = false;
-
-                for (const p of inPts) {
-                    if (p.label) {
-                        incomingLabel = p.label;
-                        incomingLabelPos = p.labelPos;
-                        if (p.from && Math.abs(p.from.y - mergeY) < 1) {
-                            hasZeroLengthForLabel = true;
-                        }
-                    }
-                    if (p.from) {
-                        const px = (p as any).limitX || p.x;
-                        allEdges.push({ 
-                            points: [p.from, {x: px, y: p.from.y}, {x: px, y: mergeY}, {x: cx, y: mergeY}], 
-                            label: p.label, 
-                            labelPos: p.labelPos ? { ...p.labelPos } : undefined,
-                            noArrow: true 
-                        });
-                    } else {
-                        if (Math.abs(p.x - cx) < 1) {
-                            allEdges.push({ points: [p, {x: cx, y: mergeY}], noArrow: true });
-                        } else {
-                            allEdges.push({ points: [p, {x: p.x, y: mergeY}, {x: cx, y: mergeY}], noArrow: true });
-                        }
-                    }
-                }
-
-                if (inPts.length > 0) {
-                    allEdges.push({ 
-                        points: [{x: cx, y: mergeY}, targetPoint],
-                        label: hasZeroLengthForLabel ? incomingLabel : undefined,
-                        labelPos: hasZeroLengthForLabel ? (incomingLabelPos ? { ...incomingLabelPos } : { x: cx + 12, y: mergeY + 12 }) : undefined
-                    });
-                }
-
-                allNodes.push({ id: node.id, type: node.kind, text: node.text, x: cx, y: currentY, height: h, lineIndex: node.lineIndex });
-                
-                let outY = currentY + h/2;
-                if (node.text === 'continue') {
-                    loopContinues.push({x: cx, y: outY, from: {x: cx, y: outY}});
-                } else if (node.text === 'break') {
-                    loopBreaks.push({x: cx, y: outY, from: {x: cx, y: outY}});
-                } else {
-                    // Should not happen as we checked for continue/break
-                }
-                
-                inPts = [];
-                currentY += h/2 + Y_MARGIN + (nextH ? nextH/2 : 0);
-                maxReachedY = Math.max(maxReachedY, currentY);
-                continue;
-            }
 
             if (inPts.length > 0) {
                 const targetPoint = { x: cx, y: currentY - h/2 };
@@ -2019,10 +1962,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
     let res = layout(ast, rootCx, startY + startH/2 + Y_MARGIN + getASTNodeHeight(ast[0])/2, rootInPts, true);
     
     let endCx = res.endCx;
-
-
     let overlappingNodes = allNodes.filter(n => Math.abs(n.x - endCx) < NODE_WIDTH);
-    
     let endPtsY = res.endPoints.filter(p => Math.abs(p.x - endCx) < NODE_WIDTH * 2).map(p => p.y);
     let maxYOfEnds = endPtsY.length > 0 ? Math.max(...endPtsY) : res.finalY;
     
@@ -2035,6 +1975,46 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
     let localColBottom = localColNode ? localColMaxY + getASTNodeHeight(localColNode)/2 : startY;
 
     let finalY = Math.max(maxYOfEnds, localColBottom, res.finalY) + 32;
+
+    // Estimate if we actually need to split the pages.
+    const PAGE_H_VAL = 1200;
+    let testMaxY = finalY;
+    if (allNodes.length > 0) {
+        testMaxY = Math.max(testMaxY, ...allNodes.map(n => n.y), res.finalY);
+    }
+    let shouldSplitFirst = false;
+    if (splitMode === 'manual') {
+        shouldSplitFirst = (customCuts && customCuts.length > 0) && !isScissorsMode;
+    } else {
+        shouldSplitFirst = testMaxY > PAGE_H_VAL + 50;
+    }
+
+    if (shouldSplitFirst) {
+        // Run second pass with pagination active!
+        disablePagination = false;
+        allNodes = [];
+        allEdges = [];
+        jumpCounter = 'A'.charCodeAt(0);
+        usedReturnX = [];
+        
+        allNodes.push({ id: 'start', type: 'start', text: startText, x: rootCx, y: startY, height: startH });
+        rootInPts = [{ x: rootCx, y: startY + startH/2 }];
+        
+        res = layout(ast, rootCx, startY + startH/2 + Y_MARGIN + getASTNodeHeight(ast[0])/2, rootInPts, true);
+        endCx = res.endCx;
+        overlappingNodes = allNodes.filter(n => Math.abs(n.x - endCx) < NODE_WIDTH);
+        endPtsY = res.endPoints.filter(p => Math.abs(p.x - endCx) < NODE_WIDTH * 2).map(p => p.y);
+        maxYOfEnds = endPtsY.length > 0 ? Math.max(...endPtsY) : res.finalY;
+        
+        localColMaxY = startY;
+        localColNode = null;
+        if (overlappingNodes.length > 0) {
+            localColMaxY = Math.max(...overlappingNodes.map(n => n.y));
+            localColNode = overlappingNodes.find(n => n.y === localColMaxY);
+        }
+        localColBottom = localColNode ? localColMaxY + getASTNodeHeight(localColNode)/2 : startY;
+        finalY = Math.max(maxYOfEnds, localColBottom, res.finalY) + 32;
+    }
 
     if (res.endPoints.length > 0) {
         let endText = isMain ? 'Конец' : `Выход из п/п\n${cleanTitle}` + (returnType ? ` (${returnType})` : ``);
@@ -2210,44 +2190,9 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                 });
             }
 
-            // Collapse large empty gaps caused by page-split jumps for discarded/reclaimed boundaries
+            // Removed gap collapse algorithm per user request
             if (splitMode === 'auto') {
-                const activeBoundaries = new Set(pageIntervals.map(pi => pi.yMax).filter(y => y !== Infinity));
-                let initialMaxK = Math.floor(maxNodeY / PAGE_H);
-                for (let k = initialMaxK; k >= 1; k--) {
-                    const B = k * PAGE_H;
-                    if (!activeBoundaries.has(B)) {
-                        const nodesBefore = allNodes.filter(n => n.y < B);
-                        const nodesAfter = allNodes.filter(n => n.y >= B);
-                        if (nodesBefore.length > 0 && nodesAfter.length > 0) {
-                            const maxYBefore = Math.max(...nodesBefore.map(n => n.y + (n.height || 64) / 2));
-                            const minYAfter = Math.min(...nodesAfter.map(n => n.y - (n.height || 64) / 2));
-                            const currentGap = minYAfter - maxYBefore;
-                            const desiredGap = 40;
-                            if (currentGap > desiredGap) {
-                                const shiftAmount = currentGap - desiredGap;
-                                allNodes.forEach(n => {
-                                    if (n.y >= B) {
-                                        n.y -= shiftAmount;
-                                    }
-                                });
-                                allEdgesFinal.forEach(e => {
-                                    if (e.segments) {
-                                        e.segments.forEach(seg => {
-                                            if (seg.startY >= B) seg.startY -= shiftAmount;
-                                            if (seg.endY >= B) seg.endY -= shiftAmount;
-                                        });
-                                    }
-                                    if (e.labelPos && e.labelPos.y >= B) {
-                                        e.labelPos.y -= shiftAmount;
-                                    }
-                                });
-                                if (finalY >= B) finalY -= shiftAmount;
-                                if (actualMaxY >= B) actualMaxY -= shiftAmount;
-                            }
-                        }
-                    }
-                }
+                // Gap collapse removed.
             }
         }
 
@@ -2456,14 +2401,8 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                                 eInS = true;
                             });
                         } else if (s === pageEnd) {
-                            let started = false;
                             e.segments.forEach(seg => {
-                                if (!started) {
-                                    if (seg.endY >= yMin || seg.startY <= yMin) {
-                                        started = true;
-                                    }
-                                }
-                                if (!started) return;
+                                if (seg.endY < yMin) return;
                                 
                                 let clipSy = seg.startY - yMin + SHIFT;
                                 let clipEy = seg.endY - yMin + SHIFT;
@@ -2531,14 +2470,8 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
                                 eInS = true;
                             });
                         } else if (s === pageEnd) {
-                            let started = false;
                             e.segments.forEach(seg => {
-                                if (!started) {
-                                    if (seg.endY <= yMax || seg.startY >= yMax) {
-                                        started = true;
-                                    }
-                                }
-                                if (!started) return;
+                                if (seg.endY >= yMax) return;
                                 
                                 let clipSy = seg.startY - yMin + SHIFT;
                                 let clipEy = seg.endY - yMin + SHIFT;
