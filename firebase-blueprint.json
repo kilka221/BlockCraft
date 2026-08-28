@@ -1,0 +1,30 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with token balance for flow-chart generation",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "number",
+          "description": "Remaining available generation tokens"
+        },
+        "email": {
+          "type": "string",
+          "description": "User email"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp when the user registered"
+        }
+      },
+      "required": ["tokens"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Collection of user profiles containing their token balance"
+    }
+  }
+}

@@ -371,14 +371,27 @@ export function parseCppSourceWhole(code: string) {
             kind = 'io';
             let vars = text.replace(/cin\s*>>/, '').replace(/;/g, '').trim();
             displayText = `Ввод:\n${vars.replace(/>>/g, ',')}`;
-        } else if (/cout\s*<</.test(text) || /printf\s*\(/.test(text)) {
+        } else if (/@?cout\s*<</.test(text) || /@?printf\s*\(/.test(text)) {
             kind = 'io';
-            let args = text.replace(/cout\s*<</, '').replace(/;/g, '').trim();
-            // drop strings and endl
-            args = args.replace(/"(.*?)"/g, '').replace(/<<\s*endl\b/g, '').replace(/endl\b/g, '').replace(/<</g, ',');
-            args = cleanIoArgs(args);
-            // replace double commas
-            args = args.replace(/,(?:\s*,)+/g, ',').replace(/^[\s,]+|[\s,]+$/g, '');
+            let isForced = text.startsWith('@');
+            let args = text.replace(/@?cout\s*<</, '').replace(/@?printf\s*\(/, '').replace(/\)\s*;/g, '').replace(/;/g, '').trim();
+            if (isForced) {
+                // Keep the string content if forced
+                if (text.includes('printf')) {
+                    // Extract from printf
+                    let m = args.match(/"(.*?)"/);
+                    if (m) args = `"${m[1]}"`;
+                } else {
+                    // Extract from cout
+                    args = args.replace(/<<\s*endl\b/g, '').replace(/endl\b/g, '').replace(/<</g, ',').trim();
+                }
+            } else {
+                // drop strings and endl
+                args = args.replace(/"(.*?)"/g, '').replace(/<<\s*endl\b/g, '').replace(/endl\b/g, '').replace(/<</g, ',');
+                args = cleanIoArgs(args);
+                // replace double commas
+                args = args.replace(/,(?:\s*,)+/g, ',').replace(/^[\s,]+|[\s,]+$/g, '');
+            }
             if (!args) {
                 return null;
             } else {
