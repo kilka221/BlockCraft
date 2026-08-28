@@ -43,6 +43,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [userTokens, setUserTokens] = useState<number | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [showTopUp, setShowTopUp] = useState(false);
   const [lastGeneratedCode, setLastGeneratedCode] = useState(() => {
      return "";
@@ -92,7 +93,9 @@ export default function App() {
   }, []);
   
   const handleLogin = async () => {
+    if (isLoggingIn) return;
     setAuthError(null);
+    setIsLoggingIn(true);
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (error: any) {
@@ -100,14 +103,23 @@ export default function App() {
         // User closed or cancelled the popup intentionally, no error banner needed
         return;
       }
+      const msg = error?.message || '';
+      if (msg.includes('Pending promise was never set') || msg.includes('INTERNAL ASSERTION')) {
+        // Internal popup conflict / race condition in SDK, ignore benign assertion error
+        return;
+      }
       console.warn('Login issue:', error?.code || error?.message);
       if (error?.code === 'auth/popup-blocked') {
         setAuthError('Всплывающее окно заблокировано браузером. Разрешите всплывающие окна или откройте приложение в отдельной вкладке.');
       } else if (error?.code === 'auth/unauthorized-domain') {
-        setAuthError('Домен приложения не добавлен в список разрешенных в Firebase Auth.');
+        setAuthError('Домен приложения не добавлен в список разрешенных в Firebase Auth (Authorized domains).');
+      } else if (error?.code === 'auth/api-key-not-valid') {
+        setAuthError('Неверный или неактивированный API-ключ Firebase. Проверьте настройки проекта.');
       } else {
         setAuthError(error?.message || 'Ошибка авторизации');
       }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -778,10 +790,11 @@ const downloadDrawio = (title: string, fontFamily: string) => {
             ) : (
               <button 
                 onClick={handleLogin}
-                className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
+                disabled={isLoggingIn}
+                className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
               >
-                <LogIn className="w-3.5 h-3.5" />
-                <span>Войти через Google (+1 токен бесплатно)</span>
+                <LogIn className={`w-3.5 h-3.5 ${isLoggingIn ? 'animate-spin' : ''}`} />
+                <span>{isLoggingIn ? 'Вход...' : 'Войти через Google (+1 токен бесплатно)'}</span>
               </button>
             )}
 
