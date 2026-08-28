@@ -7,10 +7,19 @@ import 'prismjs/components/prism-c';
 import 'prismjs/components/prism-cpp';
 import 'prismjs/themes/prism.css';
 
-import { auth, googleProvider, db } from './firebase';
-import { signInWithPopup, signOut, User } from 'firebase/auth';
-import { doc, onSnapshot, setDoc, updateDoc, increment } from 'firebase/firestore';
+import { auth, db } from './firebase';
+import { signOut, User } from 'firebase/auth';
+import { doc, onSnapshot, setDoc, updateDoc, increment, getDoc } from 'firebase/firestore';
 import { Coins, LogIn, LogOut, Sparkles, ExternalLink, Bug, Wrench } from 'lucide-react';
+import { AuthModal, LocalUserProfile } from './AuthModal';
+
+export interface AppUserProfile {
+  uid: string;
+  email?: string | null;
+  displayName?: string | null;
+  photoURL?: string | null;
+  provider?: string;
+}
 
 import { ASTNode, FlowNode, FlowEdge, DEFAULT_CODE, parsePythonSourceWhole, buildGraphs, EdgePolyline, GostShape, getNodeHeight } from './logic';
 export default function App() {
@@ -40,10 +49,24 @@ export default function App() {
     });
   };
 
-  const [user, setUser] = useState<User | null>(null);
-  const [userTokens, setUserTokens] = useState<number | null>(null);
+  const [user, setUser] = useState<AppUserProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem('blockcraft_custom_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [userTokens, setUserTokens] = useState<number | null>(() => {
+    try {
+      const saved = localStorage.getItem('blockcraft_custom_tokens');
+      return saved ? Number(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [showTopUp, setShowTopUp] = useState(false);
   const [lastGeneratedCode, setLastGeneratedCode] = useState(() => {
      return "";
@@ -53,13 +76,23 @@ export default function App() {
   React.useEffect(() => {
     let unsubscribeDoc: (() => void) | null = null;
     const unsubscribeAuth = auth.onAuthStateChanged(async (u) => {
-      setUser(u);
-      setAuthError(null);
-      if (unsubscribeDoc) {
-        unsubscribeDoc();
-        unsubscribeDoc = null;
-      }
       if (u) {
+        const appUser: AppUserProfile = {
+          uid: u.uid,
+          email: u.email,
+          displayName: u.displayName || u.email?.split('@')[0] || 'Студент',
+          photoURL: u.photoURL,
+          provider: 'firebase'
+        };
+        setUser(appUser);
+        localStorage.setItem('blockcraft_custom_user', JSON.stringify(appUser));
+        setAuthError(null);
+
+        if (unsubscribeDoc) {
+          unsubscribeDoc();
+          unsubscribeDoc = null;
+        }
+
         const userRef = doc(db, 'users', u.uid);
         unsubscribeDoc = onSnapshot(userRef, async (snap) => {
           if (!snap.exists()) {
@@ -70,19 +103,59 @@ export default function App() {
                 createdAt: new Date().toISOString()
               });
               setUserTokens(1);
+              localStorage.setItem('blockcraft_custom_tokens', '1');
             } catch (err) {
-              console.error('Failed to initialize user document:', err);
+              console.warn('Could not initialize user tokens in Firestore:', err);
               setUserTokens(1);
+              localStorage.setItem('blockcraft_custom_tokens', '1');
             }
           } else {
             const data = snap.data();
-            setUserTokens(data?.tokens ?? 0);
+            const count = data?.tokens ?? 1;
+            setUserTokens(count);
+            localStorage.setItem('blockcraft_custom_tokens', String(count));
           }
         }, (err) => {
-          console.error('Firestore snapshot error:', err);
+          console.warn('Firestore snapshot error, using local tokens:', err);
+          if (userTokens === null) {
+            setUserTokens(1);
+            localStorage.setItem('blockcraft_custom_tokens', '1');
+          }
         });
       } else {
-        setUserTokens(null);
+        // If not Firebase authenticated, check local user
+        const localSaved = localStorage.getItem('blockcraft_custom_user');
+        if (localSaved) {
+          try {
+            const parsed = JSON.parse(localSaved);
+            setUser(parsed);
+            // Sync with firestore if possible
+            const userRef = doc(db, 'users', parsed.uid);
+            try {
+              const snap = await getDoc(userRef);
+              if (snap.exists()) {
+                const count = snap.data()?.tokens ?? 1;
+                setUserTokens(count);
+                localStorage.setItem('blockcraft_custom_tokens', String(count));
+              } else {
+                await setDoc(userRef, {
+                  tokens: 1,
+                  email: parsed.email || '',
+                  displayName: parsed.displayName || '',
+                  createdAt: new Date().toISOString()
+                });
+                setUserTokens(1);
+                localStorage.setItem('blockcraft_custom_tokens', '1');
+              }
+            } catch {
+              const savedTok = localStorage.getItem('blockcraft_custom_tokens');
+              setUserTokens(savedTok ? Number(savedTok) : 1);
+            }
+          } catch {
+            setUser(null);
+            setUserTokens(null);
+          }
+        }
       }
     });
 
@@ -92,34 +165,46 @@ export default function App() {
     };
   }, []);
   
-  const handleLogin = async () => {
-    if (isLoggingIn) return;
+  const handleLogin = () => {
     setAuthError(null);
-    setIsLoggingIn(true);
+    setIsAuthModalOpen(true);
+  };
+
+  const handleAuthSuccess = async (profile: LocalUserProfile) => {
+    const appUser: AppUserProfile = {
+      uid: profile.uid,
+      email: profile.email,
+      displayName: profile.displayName,
+      photoURL: profile.photoURL,
+      provider: profile.provider
+    };
+    setUser(appUser);
+    localStorage.setItem('blockcraft_custom_user', JSON.stringify(appUser));
+    
+    // Check/create tokens in Firestore
     try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error: any) {
-      if (error?.code === 'auth/popup-closed-by-user' || error?.code === 'auth/cancelled-popup-request') {
-        // User closed or cancelled the popup intentionally, no error banner needed
-        return;
-      }
-      const msg = error?.message || '';
-      if (msg.includes('Pending promise was never set') || msg.includes('INTERNAL ASSERTION')) {
-        // Internal popup conflict / race condition in SDK, ignore benign assertion error
-        return;
-      }
-      console.warn('Login issue:', error?.code || error?.message);
-      if (error?.code === 'auth/popup-blocked') {
-        setAuthError('Всплывающее окно заблокировано браузером. Разрешите всплывающие окна или откройте приложение в отдельной вкладке.');
-      } else if (error?.code === 'auth/unauthorized-domain') {
-        setAuthError('Домен приложения не добавлен в список разрешенных в Firebase Auth (Authorized domains).');
-      } else if (error?.code === 'auth/api-key-not-valid') {
-        setAuthError('Неверный или неактивированный API-ключ Firebase. Проверьте настройки проекта.');
+      const userRef = doc(db, 'users', profile.uid);
+      const snap = await getDoc(userRef);
+      if (snap.exists()) {
+        const count = snap.data()?.tokens ?? 1;
+        setUserTokens(count);
+        localStorage.setItem('blockcraft_custom_tokens', String(count));
       } else {
-        setAuthError(error?.message || 'Ошибка авторизации');
+        await setDoc(userRef, {
+          tokens: 1,
+          email: profile.email || '',
+          displayName: profile.displayName || '',
+          provider: profile.provider,
+          createdAt: new Date().toISOString()
+        });
+        setUserTokens(1);
+        localStorage.setItem('blockcraft_custom_tokens', '1');
       }
-    } finally {
-      setIsLoggingIn(false);
+    } catch {
+      const cur = localStorage.getItem('blockcraft_custom_tokens');
+      const count = cur ? Number(cur) : 1;
+      setUserTokens(count);
+      localStorage.setItem('blockcraft_custom_tokens', String(count));
     }
   };
 
@@ -127,8 +212,12 @@ export default function App() {
     try {
       await signOut(auth);
     } catch (error) {
-      console.error('Logout error:', error);
+      console.warn('Logout notice:', error);
     }
+    setUser(null);
+    setUserTokens(null);
+    localStorage.removeItem('blockcraft_custom_user');
+    localStorage.removeItem('blockcraft_custom_tokens');
   };
 
 const [leftWidth, setLeftWidth] = useState(480);
@@ -331,7 +420,7 @@ const [leftWidth, setLeftWidth] = useState(480);
       }
 
       if (!user) {
-          await handleLogin();
+          handleLogin();
           return;
       }
       if (userTokens === null || userTokens <= 0) {
@@ -341,14 +430,23 @@ const [leftWidth, setLeftWidth] = useState(480);
       setIsGenerating(true);
       setShowTopUp(false);
       try {
-          const userRef = doc(db, 'users', user.uid);
-          await updateDoc(userRef, {
-              tokens: increment(-1)
-          });
+          // Deduct token in Firestore and local state
+          try {
+              const userRef = doc(db, 'users', user.uid);
+              await updateDoc(userRef, {
+                  tokens: increment(-1)
+              });
+          } catch (fireErr) {
+              console.warn('Firestore token decrement notice:', fireErr);
+          }
+          const nextCount = Math.max(0, (userTokens ?? 1) - 1);
+          setUserTokens(nextCount);
+          localStorage.setItem('blockcraft_custom_tokens', String(nextCount));
+          
           setLastGeneratedCode(code);
           setLastGeneratedLanguage(language);
       } catch (e: any) {
-          console.error('Error deducting token / generating:', e);
+          console.error('Error generating:', e);
           setShowTopUp(true);
       } finally {
           setIsGenerating(false);
@@ -775,12 +873,15 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                     <img src={user.photoURL} alt={user.displayName || 'User'} className="w-5 h-5 rounded-full" referrerPolicy="no-referrer" />
                   ) : (
                     <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[10px] flex items-center justify-center font-bold">
-                      {user.email ? user.email[0].toUpperCase() : 'U'}
+                      {user.displayName ? user.displayName[0].toUpperCase() : (user.email ? user.email[0].toUpperCase() : 'U')}
                     </span>
                   )}
+                  <span className="font-medium text-zinc-700 dark:text-zinc-300 text-xs max-w-[120px] truncate">
+                    {user.displayName || user.email?.split('@')[0]}
+                  </span>
                   <button 
                     onClick={handleLogout} 
-                    className="text-zinc-500 hover:text-red-500 dark:hover:text-red-400 transition" 
+                    className="text-zinc-500 hover:text-red-500 dark:hover:text-red-400 transition ml-1" 
                     title="Выйти"
                   >
                     <LogOut className="w-3.5 h-3.5" />
@@ -790,11 +891,14 @@ const downloadDrawio = (title: string, fontFamily: string) => {
             ) : (
               <button 
                 onClick={handleLogin}
-                disabled={isLoggingIn}
-                className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition"
+                className="flex items-center gap-2 bg-[#0077FF] hover:bg-[#0066DD] text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition transform active:scale-95"
               >
-                <LogIn className={`w-3.5 h-3.5 ${isLoggingIn ? 'animate-spin' : ''}`} />
-                <span>{isLoggingIn ? 'Вход...' : 'Войти через Google (+1 токен бесплатно)'}</span>
+                {/* VK Icon */}
+                <svg className="w-3.5 h-3.5 fill-white" viewBox="0 0 24 24">
+                  <path d="M15.684 0H8.316C3.592 0 0 3.592 0 8.316v7.368C0 20.408 3.592 24 8.316 24h7.368C20.408 24 24 20.408 24 15.684V8.316C24 3.592 20.408 0 15.684 0zm4.512 17.064h-1.92c-.724 0-.944-.576-2.24-1.876-1.132-1.108-1.636-1.252-1.916-1.252-.392 0-.504.112-.504.648v1.732c0 .46-.148.748-1.372.748-2.028 0-4.28-1.228-5.864-3.52-2.38-3.4-3.04-5.968-3.04-6.496 0-.288.112-.556.648-.556h1.92c.484 0 .668.224.856.748 1.008 2.82 2.704 5.284 3.4 5.284.26 0 .38-.12.38-.776V9.752c-.084-1.384-.812-1.496-.812-1.988 0-.236.196-.468.516-.468h3.016c.42 0 .576.224.576.716v3.872c0 .42.188.568.312.568.26 0 .476-.148.968-.64 1.488-1.668 2.548-4.248 2.548-4.248.14-.288.392-.48.884-.48h1.92c.576 0 .7.288.576.716-.244 1.132-2.628 4.544-2.628 4.544-.224.364-.308.528 0 .944.224.308.976 1.036 1.54 1.688.948 1.092 1.68 2.012 1.876 2.648.196.636-.084.952-.656.952z"/>
+                </svg>
+                <span>Войти (ВК / Почта)</span>
+                <span className="hidden sm:inline bg-white/20 px-1.5 py-0.5 rounded text-[10px] font-bold">+1 токен</span>
               </button>
             )}
 
@@ -1424,9 +1528,17 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                       <Bug className="w-3.5 h-3.5" /> Режим отладки багов активен — создание схем не требует токенов и входа
                     </span>
                   ) : !user ? (
-                    <span className="text-xs text-zinc-400 dark:text-zinc-500 mt-3">
-                      При первой авторизации через Google начисляется 1 токен бесплатно
-                    </span>
+                    <div className="mt-3 flex flex-col items-center gap-1.5">
+                      <span className="text-xs text-zinc-400 dark:text-zinc-500">
+                        При входе через ВКонтакте или Почту начисляется 1 токен бесплатно
+                      </span>
+                      <button
+                        onClick={handleLogin}
+                        className="text-xs font-bold text-[#0077FF] hover:underline"
+                      >
+                        Войти в аккаунт →
+                      </button>
+                    </div>
                   ) : null}
                   {authError && (
                     <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-600 dark:text-red-300 max-w-sm text-left">
@@ -1455,6 +1567,13 @@ const downloadDrawio = (title: string, fontFamily: string) => {
           </div>
         </footer>
       )}
+
+      {/* Auth Modal for VK / Email / Student */}
+      <AuthModal 
+        isOpen={isAuthModalOpen} 
+        onClose={() => setIsAuthModalOpen(false)} 
+        onSuccess={handleAuthSuccess} 
+      />
     </div>
     </div>
   );
