@@ -96,7 +96,11 @@ export default function App() {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (error: any) {
-      console.error('Login error:', error);
+      if (error?.code === 'auth/popup-closed-by-user' || error?.code === 'auth/cancelled-popup-request') {
+        // User closed or cancelled the popup intentionally, no error banner needed
+        return;
+      }
+      console.warn('Login issue:', error?.code || error?.message);
       if (error?.code === 'auth/popup-blocked') {
         setAuthError('Всплывающее окно заблокировано браузером. Разрешите всплывающие окна или откройте приложение в отдельной вкладке.');
       } else if (error?.code === 'auth/unauthorized-domain') {
