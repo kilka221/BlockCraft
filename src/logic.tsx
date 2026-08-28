@@ -1314,7 +1314,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
         return h;
     }
 
-    function layout(nodes: ASTNode[], cx: number, cy: number, incomingPoints: {x:number, y:number, from?:any, label?:string, labelPos?: {x:number,y:number}, limitX?: number}[], isRoot: boolean = false, loopBreaks: any[] = [], loopContinues: any[] = []): { endPoints: {x:number, y:number, from?:any, label?:string, labelPos?: {x:number,y:number}, limitX?: number}[], finalY: number, endCx: number } {
+    function layout(nodes: ASTNode[], cx: number, cy: number, incomingPoints: {x:number, y:number, from?:any, label?:string, labelPos?: {x:number,y:number}, limitX?: number}[], isRoot: boolean = false, loopBreaks: any[] = [], loopContinues: any[] = [], parentAllowsPagination: boolean = true): { endPoints: {x:number, y:number, from?:any, label?:string, labelPos?: {x:number,y:number}, limitX?: number}[], finalY: number, endCx: number } {
         let currentY = cy;
         let inPts = incomingPoints;
         let maxReachedY = cy;
@@ -1333,9 +1333,9 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
             // "запрети чтобы на странице был один блок ... пусть лучше предыдущая страница будет длиннее"
             // If we are at the root level and the rest of the nodes are small enough to just extend the page, skip page breaking.
             let estRemaining = isRoot ? estimateHeight(nodes.slice(i)) : Infinity;
-            const allowPagination = !disablePagination && (splitMode === 'auto') && !(isRoot && estRemaining < 800);
+            const allowPagination = !disablePagination && (splitMode === 'auto') && parentAllowsPagination && !(isRoot && estRemaining < 800);
             
-            if (allowPagination) {
+            if (allowPagination && isRoot) {
                 // if even the node shape itself doesn't fit, push it to next page
                 if (h > pageRemaining - 60) {
                     currentY = (pageIndex + 1) * PAGE_LAYOUT_H + 60 + h/2;
@@ -1987,7 +1987,7 @@ function buildGraphForAst(ast: ASTNode[], title: string, returnType: string | un
     if (splitMode === 'manual') {
         shouldSplitFirst = (customCuts && customCuts.length > 0) && !isScissorsMode;
     } else {
-        shouldSplitFirst = testMaxY > PAGE_H_VAL + 50;
+        shouldSplitFirst = testMaxY > PAGE_H_VAL + 800;
     }
 
     if (shouldSplitFirst) {
