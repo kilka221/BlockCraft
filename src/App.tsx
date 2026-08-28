@@ -10,8 +10,9 @@ import 'prismjs/themes/prism.css';
 import { auth, googleProvider, db } from './firebase';
 import { signOut, User } from 'firebase/auth';
 import { doc, onSnapshot, setDoc, updateDoc, increment, getDoc } from 'firebase/firestore';
-import { Coins, LogIn, LogOut, Sparkles, ExternalLink, Bug, Wrench } from 'lucide-react';
+import { Coins, LogIn, LogOut, Sparkles, ExternalLink, Wrench } from 'lucide-react';
 import { AuthModal } from './AuthModal';
+import { DiagramHistory } from './DiagramHistory';
 
 export interface AppUserProfile {
   uid: string;
@@ -44,6 +45,14 @@ export default function App() {
      return "";
   });
   const [lastGeneratedLanguage, setLastGeneratedLanguage] = useState("");
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? null : prev));
+    }, 3500);
+  };
   
   React.useEffect(() => {
     let unsubscribeDoc: (() => void) | null = null;
@@ -367,12 +376,68 @@ const [leftWidth, setLeftWidth] = useState(480);
           
           setLastGeneratedCode(code);
           setLastGeneratedLanguage(language);
+
+          // Auto-save generated diagram to user's history
+          if (code.trim()) {
+            try {
+              const diagId = `diag_${Date.now()}`;
+              const now = new Date().toISOString();
+              
+              // Smart title generation
+              let autoTitle = `Схема ${language === 'cpp' ? 'C++' : 'Python'}`;
+              const lines = code.split('\n').map(l => l.trim()).filter(Boolean);
+              for (const line of lines) {
+                const pyMatch = line.match(/^def\s+([a-zA-Z0-9_]+)\s*\(/);
+                if (pyMatch) { autoTitle = `Функция ${pyMatch[1]}()`; break; }
+                const cppMatch = line.match(/^(?:int|void|double|float|bool|string|auto)\s+([a-zA-Z0-9_]+)\s*\(/);
+                if (cppMatch) { autoTitle = `Функция ${cppMatch[1]}()`; break; }
+              }
+
+              if (user) {
+                const diagRef = doc(db, 'users', user.uid, 'diagrams', diagId);
+                await setDoc(diagRef, {
+                  id: diagId,
+                  userId: user.uid,
+                  title: autoTitle,
+                  code: code,
+                  language: language,
+                  isPinned: false,
+                  createdAt: now,
+                  updatedAt: now
+                });
+              } else {
+                const saved = JSON.parse(localStorage.getItem('blockcraft_local_history') || '[]');
+                saved.unshift({
+                  id: diagId,
+                  userId: 'anonymous',
+                  title: autoTitle,
+                  code: code,
+                  language: language,
+                  isPinned: false,
+                  createdAt: now,
+                  updatedAt: now
+                });
+                localStorage.setItem('blockcraft_local_history', JSON.stringify(saved.slice(0, 50)));
+              }
+            } catch (histErr) {
+              console.warn('Auto-save history error:', histErr);
+            }
+          }
       } catch (e: any) {
           console.error('Error generating:', e);
           setShowTopUp(true);
       } finally {
           setIsGenerating(false);
       }
+  };
+
+  const handleSelectDiagramFromHistory = (loadedCode: string, loadedLang: 'python' | 'cpp') => {
+    setCode(loadedCode);
+    setLanguage(loadedLang);
+    localStorage.setItem('blockcraft_code', loadedCode);
+    localStorage.setItem('blockcraft_language', loadedLang);
+    setLastGeneratedCode(loadedCode);
+    setLastGeneratedLanguage(loadedLang);
   };
 
 
@@ -1464,6 +1529,23 @@ const downloadDrawio = (title: string, fontFamily: string) => {
             <span>UTF-8</span>
           </div>
         </footer>
+      )}
+
+      {/* Bottom Right Diagram History Widget */}
+      <DiagramHistory
+        user={user}
+        currentCode={code}
+        currentLanguage={language}
+        onSelectDiagram={handleSelectDiagramFromHistory}
+        onOpenLogin={handleLogin}
+        onNotify={showToast}
+      />
+
+      {/* Floating Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-14 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-zinc-900/90 dark:bg-zinc-100/95 text-white dark:text-zinc-900 text-xs font-semibold rounded-full shadow-xl backdrop-blur border border-white/10 dark:border-black/10 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          {toastMessage}
+        </div>
       )}
 
       {/* Auth Modal for VK / Email / Student */}
