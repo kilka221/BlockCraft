@@ -33,21 +33,7 @@ export default function App() {
   const [fontFamily, setFontFamily] = useState<string>(() => localStorage.getItem('blockcraft_font') || 'Inter, sans-serif');
 
   const [language, setLanguage] = useState(() => localStorage.getItem('blockcraft_language') || 'python');
-  
-  // Debug / Bugcheck Mode toggle (unlimited generations without tokens)
-  const [debugMode, setDebugMode] = useState<boolean>(() => {
-    const saved = localStorage.getItem('blockcraft_debug_mode');
-    return saved !== null ? saved === 'true' : true; // Enabled by default for bug fixing
-  });
   const [authError, setAuthError] = useState<string | null>(null);
-
-  const toggleDebugMode = () => {
-    setDebugMode(prev => {
-      const next = !prev;
-      localStorage.setItem('blockcraft_debug_mode', String(next));
-      return next;
-    });
-  };
 
   const [user, setUser] = useState<AppUserProfile | null>(null);
   const [userTokens, setUserTokens] = useState<number | null>(null);
@@ -355,19 +341,6 @@ const [leftWidth, setLeftWidth] = useState(480);
   }, [lastGeneratedCode, language, overrides, splitMode, customCuts, isScissorsMode]);
 
   const handleGenerateClick = async () => {
-      // In Debug/Bugcheck mode, we generate immediately without auth/token deduction
-      if (debugMode) {
-          setIsGenerating(true);
-          setShowTopUp(false);
-          try {
-              setLastGeneratedCode(code);
-              setLastGeneratedLanguage(language);
-          } finally {
-              setIsGenerating(false);
-          }
-          return;
-      }
-
       if (!user) {
           handleLogin();
           return;
@@ -789,20 +762,6 @@ const downloadDrawio = (title: string, fontFamily: string) => {
           </div>
           
           <div className="flex items-center gap-4">
-            {/* Bugcheck / Debug Mode Switch */}
-            <button
-              onClick={toggleDebugMode}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition ${
-                debugMode 
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-700/60 shadow-sm' 
-                  : 'bg-zinc-100 text-zinc-600 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700'
-              }`}
-              title="В режиме отладки багов токены не тратятся и генерация работает бесплатно"
-            >
-              <Bug className={`w-3.5 h-3.5 ${debugMode ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500'}`} />
-              <span>Режим отладки: <strong className="font-bold">{debugMode ? 'ВКЛ (Без токенов)' : 'ВЫКЛ'}</strong></span>
-            </button>
-
             {/* Tokens & Auth section */}
             {user ? (
               <div className="flex items-center gap-3 bg-zinc-100 dark:bg-zinc-800/60 p-1 pl-3 pr-2 rounded-full border border-zinc-200 dark:border-zinc-700/60 text-xs">
@@ -899,7 +858,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                     className="ml-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-xs font-bold shadow-sm transition disabled:opacity-50 flex items-center gap-1"
                   >
                     <Play className="w-3 h-3 fill-white" />
-                    <span>{isGenerating ? "Генерация..." : (debugMode ? "Создать схему (Отладка: Free)" : "Создать схему")}</span>
+                    <span>{isGenerating ? "Генерация..." : "Создать схему"}</span>
                   </button>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1467,13 +1426,9 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                     className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold px-6 py-3 rounded-xl shadow-lg shadow-blue-500/20 transition transform hover:scale-105 text-sm"
                   >
                     <Play className="w-4 h-4 fill-white" />
-                    <span>{isGenerating ? "Генерация схемы..." : (debugMode ? "Создать схему (Отладка: без токенов)" : "Создать схему (1 токен)")}</span>
+                    <span>{isGenerating ? "Генерация схемы..." : "Создать схему (1 токен)"}</span>
                   </button>
-                  {debugMode ? (
-                    <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mt-3 flex items-center gap-1">
-                      <Bug className="w-3.5 h-3.5" /> Режим отладки багов активен — создание схем не требует токенов и входа
-                    </span>
-                  ) : !user ? (
+                  {!user ? (
                     <div className="mt-3 flex flex-col items-center gap-1.5">
                       <span className="text-xs text-zinc-400 dark:text-zinc-500">
                         При входе через Google или Почту начисляется 1 токен бесплатно
@@ -1489,9 +1444,6 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                   {authError && (
                     <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-600 dark:text-red-300 max-w-sm text-left">
                       <strong>Ошибка входа:</strong> {authError}
-                      <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-                        Если вы в iframe/песочнице, откройте приложение в отдельной вкладке или используйте «Режим отладки».
-                      </p>
                     </div>
                   )}
                 </div>
