@@ -1,164 +1,163 @@
 import React, { useState } from 'react';
-import { Mail, Lock, X, ArrowRight, AlertCircle } from 'lucide-react';
+import { Mail, Lock, User as UserIcon, X, ArrowRight, CheckCircle2, AlertCircle, RefreshCw, Send } from 'lucide-react';
 import { 
+  signInWithPopup,
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
-  updateProfile 
+  updateProfile,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  User
 } from 'firebase/auth';
-import { auth, db } from './firebase';
+import { auth, googleProvider, db } from './firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
-
-export interface LocalUserProfile {
-  uid: string;
-  email?: string | null;
-  displayName?: string | null;
-  photoURL?: string | null;
-  provider: 'email' | 'vk' | 'guest';
-}
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (userProfile: LocalUserProfile) => void;
+  onSuccess: (user: User) => void;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess }) => {
-  const [tab, setTab] = useState<'vk' | 'email'>('vk');
+  const [tab, setTab] = useState<'google' | 'email'>('google');
   const [isSignUp, setIsSignUp] = useState(false);
+  const [isForgotPass, setIsForgotPass] = useState(false);
   
-  // Email states
+  // Email form state
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   
-  // VK states
-  const [vkId, setVkId] = useState('');
-  
+  // States
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [verificationSent, setVerificationSent] = useState(false);
 
   if (!isOpen) return null;
 
-  // Initialize or fetch tokens in Firestore & LocalStorage
-  const registerUserTokens = async (uid: string, emailStr: string, displayName: string, photoURL?: string) => {
+  // Initialize doc in Firestore
+  const syncUserToFirestore = async (user: User) => {
     try {
-      const userRef = doc(db, 'users', uid);
+      const userRef = doc(db, 'users', user.uid);
       const snap = await getDoc(userRef);
       if (!snap.exists()) {
         await setDoc(userRef, {
           tokens: 1,
-          email: emailStr,
-          displayName,
+          email: user.email || '',
+          displayName: user.displayName || name.trim() || 'Пользователь',
+          emailVerified: user.emailVerified,
           createdAt: new Date().toISOString()
         });
       }
-    } catch (e) {
-      console.warn('Could not sync with Firestore, using local persistence:', e);
+    } catch (e: any) {
+      console.warn('Firestore write notice:', e);
     }
   };
 
-  const handleEmailAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleGoogleSignIn = async () => {
     setError(null);
-    if (!email.trim() || !password.trim()) {
-      setError('Пожалуйста, заполните все поля');
-      return;
-    }
-    if (password.length < 6) {
-      setError('Пароль должен содержать минимум 6 символов');
-      return;
-    }
-
+    setSuccessMsg(null);
     setLoading(true);
     try {
-      if (isSignUp) {
-        // Register new user
-        const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-        if (name.trim() && cred.user) {
-          await updateProfile(cred.user, { displayName: name.trim() });
-        }
-        await registerUserTokens(cred.user.uid, cred.user.email || email.trim(), name.trim() || 'Пользователь');
-        
-        onSuccess({
-          uid: cred.user.uid,
-          email: cred.user.email,
-          displayName: name.trim() || cred.user.email?.split('@')[0] || 'Пользователь',
-          provider: 'email'
-        });
-      } else {
-        // Sign in existing user
-        const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-        await registerUserTokens(cred.user.uid, cred.user.email || email.trim(), cred.user.displayName || 'Пользователь');
-        
-        onSuccess({
-          uid: cred.user.uid,
-          email: cred.user.email,
-          displayName: cred.user.displayName || cred.user.email?.split('@')[0] || 'Пользователь',
-          provider: 'email'
-        });
-      }
-      onClose();
-    } catch (err: any) {
-      console.warn('Firebase email auth error, handling fallback:', err);
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-        setError('Неверный email или пароль');
-      } else if (err.code === 'auth/email-already-in-use') {
-        setError('Этот email уже зарегистрирован. Переключитесь на «Вход».');
-      } else if (err.code === 'auth/invalid-email') {
-        setError('Некорректный формат email');
-      } else {
-        // Fallback for offline/custom auth
-        const localUid = 'email_' + btoa(email.trim()).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
-        await registerUserTokens(localUid, email.trim(), name.trim() || email.trim().split('@')[0]);
-        onSuccess({
-          uid: localUid,
-          email: email.trim(),
-          displayName: name.trim() || email.trim().split('@')[0],
-          provider: 'email'
-        });
+      const cred = await signInWithPopup(auth, googleProvider);
+      if (cred.user) {
+        await syncUserToFirestore(cred.user);
+        onSuccess(cred.user);
         onClose();
+      }
+    } catch (err: any) {
+      console.warn('Google sign-in error:', err);
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+        return;
+      }
+      if (err.message?.includes('Pending promise was never set')) {
+        return;
+      }
+      if (err.code === 'auth/popup-blocked') {
+        setError('Окно входа заблокировано браузером. Разрешите всплывающие окна для этого сайта.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setError('Домен приложения не добавлен в список авторизованных в Firebase Auth Console.');
+      } else {
+        setError(err.message || 'Ошибка входа через Google. Попробуйте войти по Email.');
       }
     } finally {
       setLoading(false);
     }
   };
 
-  const handleVkAuth = async (e: React.FormEvent) => {
+  const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    const cleanVk = vkId.trim().replace(/^https?:\/\/(www\.)?vk\.com\//, '').replace(/^@/, '');
-    if (!cleanVk) {
-      setError('Введите ваш ID ВКонтакте, никнейм или ссылку на страницу');
+    setSuccessMsg(null);
+
+    if (isForgotPass) {
+      if (!email.trim()) {
+        setError('Введите email для сброса пароля');
+        return;
+      }
+      setLoading(true);
+      try {
+        await sendPasswordResetEmail(auth, email.trim());
+        setSuccessMsg('Письмо со ссылкой для сброса пароля отправлено на ваш email!');
+      } catch (err: any) {
+        setError(err.message || 'Ошибка отправки письма');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    if (!email.trim() || !password.trim()) {
+      setError('Пожалуйста, заполните все обязательные поля');
+      return;
+    }
+    if (password.length < 6) {
+      setError('Пароль должен быть не менее 6 символов');
       return;
     }
 
     setLoading(true);
     try {
-      const vkUid = `vk_${cleanVk.toLowerCase()}`;
-      const vkName = cleanVk.startsWith('id') ? `Пользователь VK (${cleanVk})` : cleanVk;
-      const vkPhoto = `https://ui-avatars.com/api/?name=${encodeURIComponent(cleanVk)}&background=0077FF&color=fff&size=128`;
-      
-      await registerUserTokens(vkUid, `${cleanVk}@vk.com`, vkName, vkPhoto);
+      if (isSignUp) {
+        // Registration
+        const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+        if (cred.user) {
+          if (name.trim()) {
+            await updateProfile(cred.user, { displayName: name.trim() });
+          }
+          // Send email verification link
+          try {
+            await sendEmailVerification(cred.user);
+            setVerificationSent(true);
+          } catch (verErr) {
+            console.warn('Failed to send verification email:', verErr);
+          }
 
-      // Save to localStorage
-      localStorage.setItem('blockcraft_custom_user', JSON.stringify({
-        uid: vkUid,
-        email: `${cleanVk}@vk.com`,
-        displayName: vkName,
-        photoURL: vkPhoto,
-        provider: 'vk'
-      }));
-
-      onSuccess({
-        uid: vkUid,
-        email: `${cleanVk}@vk.com`,
-        displayName: vkName,
-        photoURL: vkPhoto,
-        provider: 'vk'
-      });
-      onClose();
+          await syncUserToFirestore(cred.user);
+          setSuccessMsg('Регистрация успешна! На ваш email отправлено письмо с подтверждением почты.');
+          onSuccess(cred.user);
+        }
+      } else {
+        // Login
+        const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+        if (cred.user) {
+          await syncUserToFirestore(cred.user);
+          onSuccess(cred.user);
+          onClose();
+        }
+      }
     } catch (err: any) {
-      setError(err.message || 'Ошибка входа через ВКонтакте');
+      console.warn('Email auth error:', err);
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        setError('Неверный email или пароль');
+      } else if (err.code === 'auth/email-already-in-use') {
+        setError('Этот email уже зарегистрирован. Переключитесь на форму входа.');
+      } else if (err.code === 'auth/invalid-email') {
+        setError('Некорректный формат email адреса');
+      } else {
+        setError(err.message || 'Ошибка авторизации');
+      }
     } finally {
       setLoading(false);
     }
@@ -178,10 +177,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
             </div>
             <div>
               <h3 className="font-bold text-sm text-zinc-900 dark:text-zinc-100">
-                Вход в GOST.FLOW
+                Авторизация в GOST.FLOW
               </h3>
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                Генератор блок-схем по ГОСТ 19.701-90
+                1 бесплатный токен при входе
               </p>
             </div>
           </div>
@@ -197,31 +196,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         <div className="grid grid-cols-2 p-1.5 mx-6 mt-4 bg-zinc-100 dark:bg-zinc-800/80 rounded-xl gap-1 text-xs font-semibold">
           <button
             type="button"
-            onClick={() => { setTab('vk'); setError(null); }}
-            className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition ${
-              tab === 'vk' 
-                ? 'bg-white dark:bg-[#2A2A30] text-[#0077FF] dark:text-[#3888FF] shadow-sm' 
+            onClick={() => { setTab('google'); setError(null); setSuccessMsg(null); }}
+            className={`py-2 rounded-lg flex items-center justify-center gap-2 transition ${
+              tab === 'google' 
+                ? 'bg-white dark:bg-[#2A2A30] text-zinc-900 dark:text-white shadow-sm' 
                 : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
             }`}
           >
-            {/* VK Icon */}
-            <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
-              <path d="M15.684 0H8.316C3.592 0 0 3.592 0 8.316v7.368C0 20.408 3.592 24 8.316 24h7.368C20.408 24 24 20.408 24 15.684V8.316C24 3.592 20.408 0 15.684 0zm4.512 17.064h-1.92c-.724 0-.944-.576-2.24-1.876-1.132-1.108-1.636-1.252-1.916-1.252-.392 0-.504.112-.504.648v1.732c0 .46-.148.748-1.372.748-2.028 0-4.28-1.228-5.864-3.52-2.38-3.4-3.04-5.968-3.04-6.496 0-.288.112-.556.648-.556h1.92c.484 0 .668.224.856.748 1.008 2.82 2.704 5.284 3.4 5.284.26 0 .38-.12.38-.776V9.752c-.084-1.384-.812-1.496-.812-1.988 0-.236.196-.468.516-.468h3.016c.42 0 .576.224.576.716v3.872c0 .42.188.568.312.568.26 0 .476-.148.968-.64 1.488-1.668 2.548-4.248 2.548-4.248.14-.288.392-.48.884-.48h1.92c.576 0 .7.288.576.716-.244 1.132-2.628 4.544-2.628 4.544-.224.364-.308.528 0 .944.224.308.976 1.036 1.54 1.688.948 1.092 1.68 2.012 1.876 2.648.196.636-.084.952-.656.952z"/>
+            {/* Google Icon */}
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
             </svg>
-            <span>ВКонтакте</span>
+            <span>Google аккаунт</span>
           </button>
 
           <button
             type="button"
-            onClick={() => { setTab('email'); setError(null); }}
+            onClick={() => { setTab('email'); setError(null); setSuccessMsg(null); }}
             className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition ${
               tab === 'email' 
                 ? 'bg-white dark:bg-[#2A2A30] text-blue-600 dark:text-blue-400 shadow-sm' 
                 : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
             }`}
           >
-            <Mail className="w-4 h-4" />
-            <span>Почта</span>
+            <Mail className="w-3.5 h-3.5" />
+            <span>Email с подтверждением</span>
           </button>
         </div>
 
@@ -234,62 +236,60 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
             </div>
           )}
 
-          {/* TAB 1: VK AUTH */}
-          {tab === 'vk' && (
-            <form onSubmit={handleVkAuth} className="space-y-4">
-              <div className="p-3 bg-blue-50/70 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30 rounded-xl text-xs text-blue-800 dark:text-blue-300 leading-relaxed">
-                <span className="font-semibold">Быстрый вход через профиль VK.</span> Введите ID вашей страницы, никнейм или ссылку (например: <code className="bg-white/80 dark:bg-blue-900/40 px-1 py-0.5 rounded font-mono">durov</code> или <code className="bg-white/80 dark:bg-blue-900/40 px-1 py-0.5 rounded font-mono">id1234567</code>).
+          {successMsg && (
+            <div className="mb-4 p-3 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <span>{successMsg}</span>
+                {verificationSent && (
+                  <p className="text-[11px] opacity-90">Проверьте папку «Входящие» и «Спам» на вашей почте.</p>
+                )}
               </div>
+            </div>
+          )}
 
-              <div>
-                <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300 mb-1.5">
-                  ID или страница ВКонтакте
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs font-mono">
-                    vk.com/
-                  </span>
-                  <input
-                    type="text"
-                    required
-                    value={vkId}
-                    onChange={(e) => setVkId(e.target.value)}
-                    placeholder="id_или_никнейм"
-                    className="w-full pl-18 pr-3.5 py-2.5 bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-sm outline-none focus:border-[#0077FF] focus:ring-2 focus:ring-[#0077FF]/20 transition"
-                  />
-                </div>
+          {/* TAB 1: GOOGLE AUTH */}
+          {tab === 'google' && (
+            <div className="space-y-4 py-2">
+              <div className="p-3.5 bg-blue-50/70 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30 rounded-xl text-xs text-blue-800 dark:text-blue-300 leading-relaxed">
+                Быстрый и безопасный вход в один клик. При первой авторизации начисляется <strong>1 бесплатный токен</strong> для создания блок-схем.
               </div>
 
               <button
-                type="submit"
-                disabled={loading || !vkId.trim()}
-                className="w-full py-3 bg-[#0077FF] hover:bg-[#0066DD] disabled:opacity-50 text-white font-bold rounded-xl shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2 text-sm transition transform active:scale-[0.98]"
+                type="button"
+                onClick={handleGoogleSignIn}
+                disabled={loading}
+                className="w-full py-3 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700/80 border border-zinc-300 dark:border-zinc-700 disabled:opacity-50 text-zinc-800 dark:text-zinc-100 font-bold rounded-xl shadow-sm flex items-center justify-center gap-3 text-sm transition transform active:scale-[0.98]"
               >
-                {/* VK Logo */}
-                <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
-                  <path d="M15.684 0H8.316C3.592 0 0 3.592 0 8.316v7.368C0 20.408 3.592 24 8.316 24h7.368C20.408 24 24 20.408 24 15.684V8.316C24 3.592 20.408 0 15.684 0zm4.512 17.064h-1.92c-.724 0-.944-.576-2.24-1.876-1.132-1.108-1.636-1.252-1.916-1.252-.392 0-.504.112-.504.648v1.732c0 .46-.148.748-1.372.748-2.028 0-4.28-1.228-5.864-3.52-2.38-3.4-3.04-5.968-3.04-6.496 0-.288.112-.556.648-.556h1.92c.484 0 .668.224.856.748 1.008 2.82 2.704 5.284 3.4 5.284.26 0 .38-.12.38-.776V9.752c-.084-1.384-.812-1.496-.812-1.988 0-.236.196-.468.516-.468h3.016c.42 0 .576.224.576.716v3.872c0 .42.188.568.312.568.26 0 .476-.148.968-.64 1.488-1.668 2.548-4.248 2.548-4.248.14-.288.392-.48.884-.48h1.92c.576 0 .7.288.576.716-.244 1.132-2.628 4.544-2.628 4.544-.224.364-.308.528 0 .944.224.308.976 1.036 1.54 1.688.948 1.092 1.68 2.012 1.876 2.648.196.636-.084.952-.656.952z"/>
+                <svg className="w-4 h-4" viewBox="0 0 24 24">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
                 </svg>
-                <span>{loading ? 'Вход...' : 'Войти через ВКонтакте (+1 токен)'}</span>
-                <ArrowRight className="w-4 h-4" />
+                <span>{loading ? 'Подключение к Google...' : 'Войти через Google (+1 токен)'}</span>
               </button>
-            </form>
+            </div>
           )}
 
-          {/* TAB 2: EMAIL AUTH */}
+          {/* TAB 2: EMAIL AUTH WITH CONFIRMATION */}
           {tab === 'email' && (
             <form onSubmit={handleEmailAuth} className="space-y-3.5">
-              {isSignUp && (
+              {!isForgotPass && isSignUp && (
                 <div>
                   <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
-                    Ваше имя или никнейм
+                    Ваше имя
                   </label>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Иван Иванов"
-                    className="w-full px-3.5 py-2 bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition"
-                  />
+                  <div className="relative">
+                    <UserIcon className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Иван"
+                      className="w-full pl-9 pr-3.5 py-2 bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition"
+                    />
+                  </div>
                 </div>
               )}
 
@@ -304,46 +304,84 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="student@mail.ru"
+                    placeholder="student@example.com"
                     className="w-full pl-9 pr-3.5 py-2 bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition"
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
-                  Пароль
-                </label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full pl-9 pr-3.5 py-2 bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition"
-                  />
+              {!isForgotPass && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                      Пароль
+                    </label>
+                    {!isSignUp && (
+                      <button
+                        type="button"
+                        onClick={() => { setIsForgotPass(true); setError(null); }}
+                        className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        Забыли пароль?
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="password"
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full pl-9 pr-3.5 py-2 bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition"
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {isSignUp && (
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+                  <Send className="w-3 h-3 text-blue-500 shrink-0" />
+                  <span>После регистрации вам будет отправлено письмо со ссылкой подтверждения</span>
+                </p>
+              )}
 
               <button
                 type="submit"
                 disabled={loading}
                 className="w-full py-3 mt-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-xl shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2 text-sm transition transform active:scale-[0.98]"
               >
-                <span>{loading ? 'Загрузка...' : (isSignUp ? 'Зарегистрироваться (+1 токен)' : 'Войти в аккаунт')}</span>
+                <span>
+                  {loading 
+                    ? 'Загрузка...' 
+                    : isForgotPass 
+                      ? 'Отправить ссылку для сброса'
+                      : isSignUp 
+                        ? 'Зарегистрироваться (+1 токен)' 
+                        : 'Войти в аккаунт'}
+                </span>
                 <ArrowRight className="w-4 h-4" />
               </button>
 
-              <div className="text-center pt-2">
-                <button
-                  type="button"
-                  onClick={() => { setIsSignUp(!isSignUp); setError(null); }}
-                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline font-semibold"
-                >
-                  {isSignUp ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'}
-                </button>
+              <div className="text-center pt-2 space-y-1">
+                {isForgotPass ? (
+                  <button
+                    type="button"
+                    onClick={() => { setIsForgotPass(false); setError(null); }}
+                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline font-semibold"
+                  >
+                    ← Вернуться ко входу
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { setIsSignUp(!isSignUp); setError(null); setSuccessMsg(null); }}
+                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline font-semibold"
+                  >
+                    {isSignUp ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'}
+                  </button>
+                )}
               </div>
             </form>
           )}
@@ -351,7 +389,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
         {/* Footer info */}
         <div className="px-6 py-3 bg-zinc-50 dark:bg-zinc-900/50 border-t border-zinc-100 dark:border-zinc-800/80 text-[11px] text-zinc-400 text-center">
-          При входе баланс пополняется на 1 бесплатный токен для генерации
+          Данные и баланс токенов сохраняются в базе Cloud Firestore
         </div>
       </div>
     </div>
