@@ -1,20 +1,37 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+<h1 align="center">BlockCraft — Code-to-Flowchart</h1>
+<img width="2560" height="1391" alt="Снимок экрана_20260828_145930" src="https://github.com/user-attachments/assets/fc469f43-5603-41ff-bc47-364c1eaf40bd" />
 
-# Run and deploy your AI Studio app
+**BlockCraft** — это удобный веб-сервис, который автоматически анализирует исходный код на **Python** и **C++** и строит по нему наглядные алгоритмические блок-схемы. 
 
-This contains everything you need to run your app locally.
+Проект создан для того, чтобы помочь студентам, начинающим разработчикам и преподавателям быстрее разбираться в логике программ.
 
-View your app in AI Studio: https://ai.studio/apps/08b3ee50-3f7d-4e18-91c6-2256132f3a17
+---
 
-## Run Locally
+## ✨ Ключевые возможности
+* 🛠 **Поддержка Python и C++:** Парсинг и визуализация базовых конструкций, циклов и условий.
+* ⚡ **Автоматическая генерация:** Превращение кода в наглядную визуальную схему в один клик.
+* 🎨 **Интуитивный интерфейс:** Вставил код — сразу получил готовую блок-схему.
 
-**Prerequisites:**  Node.js
+---
 
+## 🛠 Технологии и подход к разработке
+* **Стек:** TypeScript, Vite, HTML/CSS.
+* **Подход:** Проект создан с применением продвинутого промпт-инжиниринга. Весь функционал и интерфейс были сгенерированы с помощью **Google AI Studio**. Мы выступили в роли архитекторов и операторов нейросети, проектируя логику и объединяя код в рабочий сервис.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+---
+
+## 👥 Команда и роли
+* 🎨 **[Worushi](https://github.com/Worushi)** — *Идея и архитектура*
+  * Генерация основной идеи сервиса.
+  * Контроль качества и общее руководство проектом на всех этапах.
+
+* ⚙️ **[kilka221](https://github.com/kilka221)** — *Промпт-инжиниринг и генерация кода*
+  * Написание и оптимизация промптов в Google AI Studio.
+  * Взаимодействие с ИИ для получения рабочего и чистого кода.
+  * Отладка сгенерированных скриптов, тестирование и сборка проекта.
+
+---
+
+## 🚀 Использование
+
+[Запустить ссылку](https://block-craft-pi.vercel.app/)
