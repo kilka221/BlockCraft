@@ -9,55 +9,61 @@ export interface YandexUserProfile {
 }
 
 export async function fetchYandexProfileByToken(accessToken: string): Promise<YandexUserProfile> {
+  let rawData: any = null;
+
+  // 1. Primary Attempt: Call server proxy route /api/yandex/userinfo
   try {
     const resp = await fetch(`/api/yandex/userinfo?token=${encodeURIComponent(accessToken)}`);
     const contentType = resp.headers.get('content-type') || '';
 
-    let json: any = null;
     if (contentType.includes('application/json')) {
-      json = await resp.json();
-    } else {
-      const rawText = await resp.text();
-      console.warn('[Yandex Auth] non-JSON response from API:', resp.status, rawText.slice(0, 100));
-      throw new Error('Сервер Яндекс авторизации недоступен. Попробуйте повторить вход.');
-    }
-
-    if (!resp.ok || !json.success || !json.data) {
-      let errorMsg = 'Не удалось получить данные профиля Яндекс';
-      if (json.details) {
-        try {
-          const parsed = typeof json.details === 'string' ? JSON.parse(json.details) : json.details;
-          if (parsed.message) errorMsg = `Яндекс: ${parsed.message}`;
-          else if (parsed.error_description) errorMsg = `Яндекс: ${parsed.error_description}`;
-          else if (parsed.error) errorMsg = `Яндекс: ${parsed.error}`;
-        } catch {
-          errorMsg = json.details;
-        }
+      const json = await resp.json();
+      if (resp.ok && json.success) {
+        if (json.user) return json.user;
+        if (json.data) rawData = json.data;
       } else if (json.error) {
-        errorMsg = json.error;
+        console.warn('[Yandex Auth Proxy Warning]:', json.error, json.details);
       }
-      throw new Error(errorMsg);
     }
-
-    const data = json.data;
-    const email = data.default_email || (data.emails && data.emails[0]) || `${data.login}@yandex.ru`;
-    const avatarUrl = data.default_avatar_id
-      ? `https://avatars.yandex.net/get-yapic/${data.default_avatar_id}/islands-200`
-      : undefined;
-
-    return {
-      uid: `yandex_${data.id || data.login}`,
-      email: email,
-      displayName: data.real_name || data.display_name || data.first_name || data.login || 'Пользователь Яндекс',
-      photoURL: avatarUrl,
-      providerId: 'yandex.ru',
-    };
-  } catch (err: any) {
-    if (err.message && (err.message.includes('Unexpected token') || err.message.includes('is not valid JSON'))) {
-      throw new Error('Не удалось расшифровать ответ от Яндекс. Попробуйте войти снова.');
-    }
-    throw err;
+  } catch (err) {
+    console.warn('[Yandex Auth Proxy Fetch Failed, trying direct Yandex fetch]:', err);
   }
+
+  // 2. Secondary Fallback Attempt: Direct fetch from Yandex OAuth info API (supports CORS)
+  if (!rawData) {
+    try {
+      const directResp = await fetch(`https://login.yandex.ru/info?format=json&oauth_token=${encodeURIComponent(accessToken)}`);
+      if (directResp.ok) {
+        rawData = await directResp.json();
+      } else {
+        const errJson = await directResp.json().catch(() => null);
+        let msg = 'Сессия Яндекс недействительна или истекла.';
+        if (errJson && errJson.message) {
+          msg = `Ошибка Яндекс ID: ${errJson.message}`;
+        }
+        throw new Error(msg);
+      }
+    } catch (directErr: any) {
+      if (directErr.message && directErr.message.includes('Ошибка Яндекс ID')) {
+        throw directErr;
+      }
+      console.error('[Direct Yandex fetch error]:', directErr);
+      throw new Error('Не удалось получить данные профиля Яндекс. Попробуйте повторить вход.');
+    }
+  }
+
+  const email = rawData.default_email || (rawData.emails && rawData.emails[0]) || `${rawData.login}@yandex.ru`;
+  const avatarUrl = rawData.default_avatar_id
+    ? `https://avatars.yandex.net/get-yapic/${rawData.default_avatar_id}/islands-200`
+    : undefined;
+
+  return {
+    uid: `yandex_${rawData.id || rawData.login}`,
+    email: email,
+    displayName: rawData.real_name || rawData.display_name || rawData.first_name || rawData.login || 'Пользователь Яндекс',
+    photoURL: avatarUrl,
+    providerId: 'yandex.ru',
+  };
 }
 
 export const YANDEX_CLIENT_ID = 'c0f4c3f30ccf47088a44f3262ed4fe32';
