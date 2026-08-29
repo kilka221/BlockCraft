@@ -10,7 +10,7 @@ import {
   registerYdbUser,
   loginYdbUser,
   deleteYdbDiagram
-} from './src/server/ydb';
+} from './src/server/ydb.js';
 
 process.on('unhandledRejection', (reason) => {
   console.warn('[YDB/Server Warning] Unhandled Rejection:', reason);
