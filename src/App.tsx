@@ -96,10 +96,14 @@ export default function App() {
         setAuthError(null);
         
         // Sync with YDB Serverless
-        syncYdbUser(u.uid, u.email, u.displayName).then(() => {
-          getYdbUserTokens(u.uid).then((tok) => {
-            if (tok !== undefined) setUserTokens(tok);
-          });
+        syncYdbUser(u.uid, u.email, u.displayName).then((syncRes) => {
+          if (syncRes?.result?.tokens) {
+            setUserTokens(syncRes.result.tokens);
+          } else {
+            getYdbUserTokens(u.uid, u.email).then((tok) => {
+              if (tok !== undefined) setUserTokens(tok);
+            });
+          }
         });
       } catch (e) {
         console.warn('Error reading saved user session:', e);
@@ -123,9 +127,13 @@ export default function App() {
     localStorage.setItem('blockcraft_yandex_user', JSON.stringify(appUser));
     
     // Sync to Yandex Database (YDB Serverless)
-    await syncYdbUser(authUser.uid, authUser.email, authUser.displayName);
-    const tok = await getYdbUserTokens(authUser.uid);
-    setUserTokens(tok ?? 1);
+    const syncRes = await syncYdbUser(authUser.uid, authUser.email, authUser.displayName);
+    if (syncRes?.result?.tokens) {
+      setUserTokens(syncRes.result.tokens);
+    } else {
+      const tok = await getYdbUserTokens(authUser.uid, authUser.email);
+      setUserTokens(tok ?? 1);
+    }
   };
 
   const handleLogout = async () => {

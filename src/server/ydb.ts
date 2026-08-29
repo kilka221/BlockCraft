@@ -36,9 +36,10 @@ export async function getYdbDriver(): Promise<Driver> {
 }
 
 // User Helpers
-export async function getYdbUser(userId: string) {
+export async function getYdbUser(userId: string, email?: string) {
   const driver = await getYdbDriver();
   return await driver.tableClient.withSession(async (session) => {
+    // 1. Try by userId
     const query = `
       DECLARE $userId AS Utf8;
       SELECT userId, email, displayName, tokens, createdAt
@@ -51,32 +52,78 @@ export async function getYdbUser(userId: string) {
     });
 
     const rows = resultSets[0]?.rows;
-    if (!rows || rows.length === 0) return null;
-    return TypedData.createNativeObjects(resultSets[0])[0];
+    if (rows && rows.length > 0) {
+      return TypedData.createNativeObjects(resultSets[0])[0];
+    }
+
+    // 2. Fallback: Try by email if provided or if userId looks like an email
+    const cleanEmail = (email || (userId.includes('@') ? userId : '')).toLowerCase().trim();
+    if (cleanEmail) {
+      const emailQuery = `
+        DECLARE $email AS Utf8;
+        SELECT userId, email, displayName, tokens, createdAt
+        FROM users
+        WHERE email = $email;
+      `;
+      const prepEmail = await session.prepareQuery(emailQuery);
+      const emailRes = await session.executeQuery(prepEmail, {
+        $email: TypedValues.utf8(cleanEmail)
+      });
+      const eRows = emailRes.resultSets[0]?.rows;
+      if (eRows && eRows.length > 0) {
+        return TypedData.createNativeObjects(emailRes.resultSets[0])[0];
+      }
+    }
+
+    return null;
   });
 }
 
-export async function upsertYdbUser(userId: string, email: string, displayName: string) {
+export async function upsertYdbUser(userId: string, email: string, displayName: string, hintTokens?: number) {
   const driver = await getYdbDriver();
   return await driver.tableClient.withSession(async (session) => {
-    // Check if exists
-    const checkQuery = `
+    let tokensToKeep = typeof hintTokens === 'number' && !isNaN(hintTokens) && hintTokens > 0 ? hintTokens : 1;
+    const cleanEmail = (email || '').toLowerCase().trim();
+
+    // 1. Check existing tokens by userId
+    const checkUserQuery = `
       DECLARE $userId AS Utf8;
-      SELECT userId, tokens, email, displayName FROM users WHERE userId = $userId;
+      SELECT userId, tokens, email FROM users WHERE userId = $userId;
     `;
-    const prepCheck = await session.prepareQuery(checkQuery);
-    const checkRes = await session.executeQuery(prepCheck, {
+    const prepCheckUser = await session.prepareQuery(checkUserQuery);
+    const checkUserRes = await session.executeQuery(prepCheckUser, {
       $userId: TypedValues.utf8(userId)
     });
-
-    const rows = checkRes.resultSets[0]?.rows;
-    let tokensToKeep = 1;
-
-    if (rows && rows.length > 0) {
-      const existing = TypedData.createNativeObjects(checkRes.resultSets[0])[0];
-      tokensToKeep = Number(existing.tokens) || 1;
+    const userRows = checkUserRes.resultSets[0]?.rows;
+    if (userRows && userRows.length > 0) {
+      const existing = TypedData.createNativeObjects(checkUserRes.resultSets[0])[0];
+      const t = Number(existing.tokens);
+      if (!isNaN(t) && t > tokensToKeep) tokensToKeep = t;
     }
 
+    // 2. Check existing tokens by email across all accounts for this email
+    if (cleanEmail) {
+      const checkEmailQuery = `
+        DECLARE $email AS Utf8;
+        SELECT userId, tokens, email FROM users WHERE email = $email;
+      `;
+      const prepCheckEmail = await session.prepareQuery(checkEmailQuery);
+      const checkEmailRes = await session.executeQuery(prepCheckEmail, {
+        $email: TypedValues.utf8(cleanEmail)
+      });
+      const emailRows = checkEmailRes.resultSets[0]?.rows;
+      if (emailRows && emailRows.length > 0) {
+        const nativeEmailRows = TypedData.createNativeObjects(checkEmailRes.resultSets[0]);
+        for (const row of nativeEmailRows) {
+          const t = Number(row.tokens);
+          if (!isNaN(t) && t > tokensToKeep) {
+            tokensToKeep = t;
+          }
+        }
+      }
+    }
+
+    // 3. Upsert into users for current userId
     const upsertQuery = `
       DECLARE $userId AS Utf8;
       DECLARE $email AS Utf8;
@@ -90,13 +137,27 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
     const prepUpsert = await session.prepareQuery(upsertQuery);
     await session.executeQuery(prepUpsert, {
       $userId: TypedValues.utf8(userId),
-      $email: TypedValues.utf8(email || ''),
+      $email: TypedValues.utf8(cleanEmail),
       $displayName: TypedValues.utf8(displayName || 'Пользователь'),
       $tokens: TypedValues.int64(tokensToKeep),
       $createdAt: TypedValues.utf8(new Date().toISOString()),
     });
 
-    console.log(`[YDB] Saved user to Yandex Cloud YDB: userId=${userId}, email=${email}, displayName=${displayName}, tokens=${tokensToKeep}`);
+    // 4. Update all accounts linked to this email to have at least tokensToKeep
+    if (cleanEmail) {
+      const updateOtherQuery = `
+        DECLARE $email AS Utf8;
+        DECLARE $tokens AS Int64;
+        UPDATE users SET tokens = $tokens WHERE email = $email;
+      `;
+      const prepUpdateOther = await session.prepareQuery(updateOtherQuery);
+      await session.executeQuery(prepUpdateOther, {
+        $email: TypedValues.utf8(cleanEmail),
+        $tokens: TypedValues.int64(tokensToKeep)
+      });
+    }
+
+    console.log(`[YDB] Saved user to Yandex Cloud YDB: userId=${userId}, email=${cleanEmail}, displayName=${displayName}, tokens=${tokensToKeep}`);
     return { tokens: tokensToKeep };
   });
 }

@@ -108,7 +108,8 @@ async function startServer() {
   apiRouter.get('/users/:uid', async (req, res) => {
     try {
       const { uid } = req.params;
-      const user = await getYdbUser(uid);
+      const email = req.query.email as string;
+      const user = await getYdbUser(uid, email);
       res.json({ success: true, user: user || { tokens: 1 } });
     } catch (e: any) {
       console.error('YDB getUser error:', e);
@@ -118,9 +119,9 @@ async function startServer() {
 
   apiRouter.post('/users/sync', async (req, res) => {
     try {
-      const { uid, email, displayName } = req.body;
+      const { uid, email, displayName, tokens } = req.body;
       if (!uid) return res.status(400).json({ success: false, error: 'uid is required' });
-      const result = await upsertYdbUser(uid, email || '', displayName || '');
+      const result = await upsertYdbUser(uid, email || '', displayName || '', tokens);
       res.json({ success: true, result });
     } catch (e: any) {
       console.error('YDB syncUser error:', e);

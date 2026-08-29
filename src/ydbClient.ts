@@ -24,18 +24,21 @@ async function safeFetchJson(url: string, options?: RequestInit) {
   }
 }
 
-export async function syncYdbUser(uid: string, email?: string | null, displayName?: string | null) {
+export async function syncYdbUser(uid: string, email?: string | null, displayName?: string | null, tokens?: number) {
   return await safeFetchJson('/api/users/sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ uid, email, displayName }),
+    body: JSON.stringify({ uid, email, displayName, tokens }),
   });
 }
 
-export async function getYdbUserTokens(uid: string): Promise<number> {
-  const data = await safeFetchJson(`/api/users/${encodeURIComponent(uid)}`);
+export async function getYdbUserTokens(uid: string, email?: string | null): Promise<number> {
+  const url = email 
+    ? `/api/users/${encodeURIComponent(uid)}?email=${encodeURIComponent(email)}`
+    : `/api/users/${encodeURIComponent(uid)}`;
+  const data = await safeFetchJson(url);
   if (data && data.success && data.user) {
-    return data.user.tokens ?? 1;
+    return Number(data.user.tokens) || 1;
   }
   return 1;
 }
