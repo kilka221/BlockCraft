@@ -35,6 +35,27 @@ export async function getYdbDriver(): Promise<Driver> {
   return ydbDriver;
 }
 
+// Helper to safely convert YDB Int64 (which ydb-sdk returns as Long/BigInt/object) to a JS number
+export function toJsNumber(val: any, fallback = 1): number {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === 'number') return isNaN(val) ? fallback : val;
+  if (typeof val === 'bigint') return Number(val);
+  if (typeof val === 'string') {
+    const p = parseInt(val, 10);
+    return isNaN(p) ? fallback : p;
+  }
+  if (typeof val === 'object') {
+    if (typeof val.toNumber === 'function') {
+      try { return val.toNumber(); } catch {}
+    }
+    if ('low' in val && typeof val.low === 'number') {
+      return val.low;
+    }
+  }
+  const p = Number(val);
+  return isNaN(p) ? fallback : p;
+}
+
 // User Helpers
 export async function getYdbUser(userId: string, email?: string) {
   const driver = await getYdbDriver();
@@ -53,7 +74,9 @@ export async function getYdbUser(userId: string, email?: string) {
 
     const rows = resultSets[0]?.rows;
     if (rows && rows.length > 0) {
-      return TypedData.createNativeObjects(resultSets[0])[0];
+      const obj = TypedData.createNativeObjects(resultSets[0])[0];
+      if (obj) obj.tokens = toJsNumber(obj.tokens, 1);
+      return obj;
     }
 
     // 2. Fallback: Try by email if provided or if userId looks like an email
@@ -71,7 +94,9 @@ export async function getYdbUser(userId: string, email?: string) {
       });
       const eRows = emailRes.resultSets[0]?.rows;
       if (eRows && eRows.length > 0) {
-        return TypedData.createNativeObjects(emailRes.resultSets[0])[0];
+        const obj = TypedData.createNativeObjects(emailRes.resultSets[0])[0];
+        if (obj) obj.tokens = toJsNumber(obj.tokens, 1);
+        return obj;
       }
     }
 
@@ -97,8 +122,8 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
     const userRows = checkUserRes.resultSets[0]?.rows;
     if (userRows && userRows.length > 0) {
       const existing = TypedData.createNativeObjects(checkUserRes.resultSets[0])[0];
-      const t = Number(existing.tokens);
-      if (!isNaN(t) && t > tokensToKeep) tokensToKeep = t;
+      const t = toJsNumber(existing?.tokens, 1);
+      if (t > tokensToKeep) tokensToKeep = t;
     }
 
     // 2. Check existing tokens by email across all accounts for this email
@@ -115,8 +140,8 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
       if (emailRows && emailRows.length > 0) {
         const nativeEmailRows = TypedData.createNativeObjects(checkEmailRes.resultSets[0]);
         for (const row of nativeEmailRows) {
-          const t = Number(row.tokens);
-          if (!isNaN(t) && t > tokensToKeep) {
+          const t = toJsNumber(row?.tokens, 1);
+          if (t > tokensToKeep) {
             tokensToKeep = t;
           }
         }
@@ -166,7 +191,7 @@ export async function decrementYdbToken(userId: string): Promise<number> {
   const driver = await getYdbDriver();
   return await driver.tableClient.withSession(async (session) => {
     const user = await getYdbUser(userId);
-    const currentTokens = user ? Number(user.tokens) : 1;
+    const currentTokens = user ? toJsNumber(user.tokens, 1) : 1;
     const newTokens = Math.max(0, currentTokens - 1);
 
     const updateQuery = `
@@ -327,7 +352,7 @@ export async function loginYdbUser(email: string, pass: string) {
       uid: String(userObj.userId),
       email: String(userObj.email || cleanEmail),
       displayName: String(userObj.displayName || cleanEmail.split('@')[0]),
-      tokens: Number(userObj.tokens) || 1
+      tokens: toJsNumber(userObj.tokens, 1)
     };
   });
 }

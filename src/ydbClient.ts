@@ -38,7 +38,13 @@ export async function getYdbUserTokens(uid: string, email?: string | null): Prom
     : `/api/users/${encodeURIComponent(uid)}`;
   const data = await safeFetchJson(url);
   if (data && data.success && data.user) {
-    return Number(data.user.tokens) || 1;
+    const val = data.user.tokens;
+    if (typeof val === 'number') return val;
+    if (typeof val === 'object' && val !== null) {
+      if ('low' in val && typeof val.low === 'number') return val.low;
+    }
+    const p = Number(val);
+    return isNaN(p) ? 1 : p;
   }
   return 1;
 }
