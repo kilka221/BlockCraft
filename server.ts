@@ -176,8 +176,9 @@ apiRouter.post('/diagrams/delete', async (req, res) => {
   }
 });
 
-// Mount API router under both /api and root (for flexible serverless routing)
+// Mount API router under both /api and root (for flexible serverless routing on Vercel and Node)
 app.use('/api', apiRouter);
+app.use(apiRouter);
 
 // Global Error Handler for API
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
