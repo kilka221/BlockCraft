@@ -7,10 +7,12 @@ import 'prismjs/components/prism-c';
 import 'prismjs/components/prism-cpp';
 import 'prismjs/themes/prism.css';
 
-import { auth, googleProvider, db } from './firebase';
-import { signOut, User } from 'firebase/auth';
+import { auth, db } from './firebase';
+import { signOut, User, sendEmailVerification } from 'firebase/auth';
 import { doc, onSnapshot, setDoc, updateDoc, increment, getDoc } from 'firebase/firestore';
-import { Coins, LogIn, LogOut, Sparkles, ExternalLink, Wrench } from 'lucide-react';
+import { syncYdbUser, getYdbUserTokens, decrementYdbUserToken } from './ydbClient';
+import { fetchYandexProfileByToken } from './yandexAuth';
+import { Coins, LogIn, LogOut, Sparkles, ExternalLink, Wrench, AlertCircle } from 'lucide-react';
 import { AuthModal } from './AuthModal';
 import { DiagramHistory } from './DiagramHistory';
 
@@ -56,6 +58,70 @@ export default function App() {
   
   React.useEffect(() => {
     let unsubscribeDoc: (() => void) | null = null;
+
+    // Check for Yandex OAuth response token in URL hash
+    if (window.location.hash.includes('access_token')) {
+      const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
+      const accessToken = hashParams.get('access_token');
+      if (accessToken) {
+        if (window.opener) {
+          try {
+            window.opener.postMessage({ type: 'YANDEX_OAUTH_TOKEN', token: accessToken }, '*');
+          } catch (e) {
+            console.error('OAuth postMessage error:', e);
+          }
+          setTimeout(() => {
+            try { window.close(); } catch {}
+          }, 600);
+          return;
+        } else {
+          fetchYandexProfileByToken(accessToken).then((yUser) => {
+            setUser(yUser);
+            setAuthError(null);
+            localStorage.setItem('blockcraft_yandex_user', JSON.stringify(yUser));
+            syncYdbUser(yUser.uid, yUser.email, yUser.displayName).then(() => {
+              getYdbUserTokens(yUser.uid).then((tok) => {
+                if (tok !== undefined) setUserTokens(tok);
+              });
+            });
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }).catch((err) => {
+            console.warn('OAuth token parse error:', err);
+          });
+        }
+      }
+    }
+
+    // Check for cached Yandex session and sync with Yandex Database (YDB)
+    const savedYandex = localStorage.getItem('blockcraft_yandex_user');
+    if (savedYandex) {
+      try {
+        const yUser = JSON.parse(savedYandex);
+        setUser(yUser);
+        setAuthError(null);
+        
+        // Sync with YDB Serverless
+        syncYdbUser(yUser.uid, yUser.email, yUser.displayName).then(() => {
+          getYdbUserTokens(yUser.uid).then((tok) => {
+            if (tok !== undefined) setUserTokens(tok);
+          });
+        });
+
+        const userRef = doc(db, 'users', yUser.uid);
+        unsubscribeDoc = onSnapshot(userRef, (snap) => {
+          if (snap.exists()) {
+            setUserTokens(snap.data()?.tokens ?? 1);
+          } else if (userTokens === null) {
+            setUserTokens(1);
+          }
+        }, () => {
+          // Fallback handled by YDB
+        });
+      } catch (e) {
+        console.warn('Error reading saved Yandex user:', e);
+      }
+    }
+
     const unsubscribeAuth = auth.onAuthStateChanged(async (u) => {
       if (u) {
         const appUser: AppUserProfile = {
@@ -100,7 +166,7 @@ export default function App() {
             setUserTokens(1);
           }
         });
-      } else {
+      } else if (!localStorage.getItem('blockcraft_yandex_user')) {
         setUser(null);
         setUserTokens(null);
         if (unsubscribeDoc) {
@@ -121,7 +187,7 @@ export default function App() {
     setIsAuthModalOpen(true);
   };
 
-  const handleAuthSuccess = async (authUser: User) => {
+  const handleAuthSuccess = async (authUser: any) => {
     const appUser: AppUserProfile = {
       uid: authUser.uid,
       email: authUser.email,
@@ -131,7 +197,10 @@ export default function App() {
     };
     setUser(appUser);
     
-    // Check/create tokens in Firestore
+    // Sync to Yandex Database (YDB Serverless)
+    await syncYdbUser(authUser.uid, authUser.email, authUser.displayName);
+
+    // Fallback sync in Firestore
     try {
       const userRef = doc(db, 'users', authUser.uid);
       const snap = await getDoc(userRef);
@@ -143,19 +212,19 @@ export default function App() {
           tokens: 1,
           email: authUser.email || '',
           displayName: authUser.displayName || authUser.email?.split('@')[0] || 'Пользователь',
-          emailVerified: authUser.emailVerified,
           createdAt: new Date().toISOString()
         });
         setUserTokens(1);
       }
     } catch (err) {
-      console.warn('Firestore init error:', err);
+      console.warn('Database init error:', err);
       setUserTokens(1);
     }
   };
 
   const handleLogout = async () => {
     try {
+      localStorage.removeItem('blockcraft_yandex_user');
       await signOut(auth);
     } catch (error) {
       console.warn('Logout notice:', error);
@@ -354,6 +423,10 @@ const [leftWidth, setLeftWidth] = useState(480);
           handleLogin();
           return;
       }
+      if (user.emailVerified === false && !user.uid.startsWith('yandex_')) {
+          setAuthError('Пожалуйста, подтвердите ваш e-mail для активации 1 бесплатного токена и создания схем.');
+          return;
+      }
       if (userTokens === null || userTokens <= 0) {
           setShowTopUp(true);
           return;
@@ -361,6 +434,9 @@ const [leftWidth, setLeftWidth] = useState(480);
       setIsGenerating(true);
       setShowTopUp(false);
       try {
+          // Decrement token in Yandex Database (YDB)
+          decrementYdbUserToken(user.uid).catch(() => {});
+
           // Deduct token in Firestore and local state
           try {
               const userRef = doc(db, 'users', user.uid);
@@ -818,11 +894,9 @@ const downloadDrawio = (title: string, fontFamily: string) => {
       {!viewMode && (
         <header className="h-14 border-b border-zinc-200 dark:border-zinc-800/80 bg-white dark:bg-[#232328] flex items-center justify-between px-6 shrink-0 transition-colors duration-300">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg shadow-sm flex items-center justify-center">
-              <Sparkles className="w-4 h-4 text-white" />
-            </div>
-            <h1 className="text-lg font-bold tracking-tight text-zinc-900 dark:text-white uppercase flex items-center gap-2">
-              GOST.Flow <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-semibold normal-case">Pro</span>
+            <img src="/icon.svg" alt="Схематор" className="w-8 h-8 rounded-lg object-contain shadow-sm select-none" />
+            <h1 className="text-lg font-bold tracking-tight text-zinc-900 dark:text-white flex items-center gap-2">
+              Схематор
             </h1>
           </div>
           
@@ -864,17 +938,15 @@ const downloadDrawio = (title: string, fontFamily: string) => {
             ) : (
               <button 
                 onClick={handleLogin}
-                className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition transform active:scale-95"
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-sm shadow-blue-500/20 transition transform active:scale-95"
               >
                 <LogIn className="w-3.5 h-3.5" />
-                <span>Войти (Google / Email)</span>
+                <span>Войти</span>
                 <span className="hidden sm:inline bg-white/20 px-1.5 py-0.5 rounded text-[10px] font-bold">+1 токен</span>
               </button>
             )}
 
-            <div className="hidden md:block w-px h-5 bg-zinc-200 dark:bg-zinc-700"></div>
-
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-widest">Theme:</span>
               <button 
                 onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}
@@ -882,8 +954,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
               >
                 {theme === 'light' ? 'Dark' : 'Light'}
               </button>
-              <div className="hidden md:block w-px h-4 bg-zinc-200 dark:bg-zinc-700 mx-1"></div>
-              <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-widest">Font:</span>
+              <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-widest ml-1">Font:</span>
               <select 
                 value={fontFamily}
                 onChange={(e) => setFontFamily(e.target.value)}
@@ -896,6 +967,51 @@ const downloadDrawio = (title: string, fontFamily: string) => {
             </div>
           </div>
         </header>
+      )}
+
+      {user && !user.emailVerified && !user.uid.startsWith('yandex_') && (
+        <div className="bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/60 px-6 py-2 text-xs text-amber-800 dark:text-amber-200 flex items-center justify-between gap-4 shrink-0 z-30">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>
+              Подтвердите ваш e-mail <strong>{user.email}</strong> для активации 1 бесплатного токена и создания схем.
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={async () => {
+                if (auth.currentUser) {
+                  try {
+                    await sendEmailVerification(auth.currentUser);
+                    showToast('Письмо отправлено повторно! Проверьте вашу почту.');
+                  } catch (e: any) {
+                    showToast('Ошибка отправки: ' + (e.message || 'попробуйте позже'));
+                  }
+                }
+              }}
+              className="px-2.5 py-1 bg-amber-200/60 dark:bg-amber-900/60 hover:bg-amber-300/60 dark:hover:bg-amber-800/80 rounded font-semibold text-[11px] transition"
+            >
+              Отправить повторно
+            </button>
+            <button
+              onClick={async () => {
+                if (auth.currentUser) {
+                  await auth.currentUser.reload();
+                  if (auth.currentUser.emailVerified) {
+                    setUser({ ...user, emailVerified: true });
+                    setAuthError(null);
+                    showToast('E-mail успешно подтвержден!');
+                  } else {
+                    showToast('E-mail еще не подтвержден. Перейдите по ссылке из письма.');
+                  }
+                }
+              }}
+              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded font-bold text-[11px] transition"
+            >
+              Я подтвердил (Проверить)
+            </button>
+          </div>
+        </div>
       )}
 
       <main className="flex-grow flex flex-col md:flex-row overflow-hidden relative">
@@ -920,9 +1036,9 @@ const downloadDrawio = (title: string, fontFamily: string) => {
                   <button 
                     onClick={handleGenerateClick} 
                     disabled={isGenerating || !code.trim()} 
-                    className="ml-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-xs font-bold shadow-sm transition disabled:opacity-50 flex items-center gap-1"
+                    className="ml-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold shadow-sm transition disabled:opacity-50 flex items-center gap-1.5"
                   >
-                    <Play className="w-3 h-3 fill-white" />
+                    <Play className="w-3.5 h-3.5 fill-white" />
                     <span>{isGenerating ? "Генерация..." : "Создать схему"}</span>
                   </button>
                 </div>
@@ -1004,7 +1120,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
         )}
 
         <section className="flex-grow bg-[#eef2f6] dark:bg-[#121214] relative flex flex-col items-center overflow-hidden transition-colors duration-300">
-          {!viewMode && (
+          {!viewMode && graphs.length > 0 && (
             <div className="w-full bg-white dark:bg-[#232328] border-b border-zinc-200 dark:border-zinc-800/80 z-20 flex px-4 pt-4 shadow-sm flex-col shrink-0 overflow-visible transition-colors duration-300">
               <div className="flex flex-wrap gap-y-1">
                   {graphs.map((graph, idx) => (
@@ -1022,7 +1138,7 @@ const downloadDrawio = (title: string, fontFamily: string) => {
             </div>
           )}
           <div className="w-full sticky top-0 z-30 shrink-0 shadow-sm border-b border-zinc-200 dark:border-zinc-800/80 bg-white/90 dark:bg-[#232328]/90 backdrop-blur transition-colors duration-300">
-              <div className="w-full px-4 py-2 flex flex-wrap items-center justify-between gap-4 border-b border-zinc-100 dark:border-zinc-800/40 relative min-h-[48px]">
+              <div className="w-full px-4 py-2 flex flex-wrap items-center justify-between gap-4 relative min-h-[48px]">
                   {/* Left: Mode toggle & Scissors */}
                   <div className="flex items-center gap-4 flex-wrap">
                       <div className="flex items-center gap-2">
@@ -1476,35 +1592,19 @@ const downloadDrawio = (title: string, fontFamily: string) => {
 
               {graphs.length === 0 && (
                 <div className="my-auto flex flex-col items-center justify-center text-center p-8 max-w-md">
-                  <div className="w-14 h-14 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center mb-4 border border-blue-100 dark:border-blue-800/40 shadow-sm">
-                    <Sparkles className="w-7 h-7" />
+                  <div className="w-16 h-16 bg-white dark:bg-zinc-800 rounded-2xl flex items-center justify-center mb-4 border border-zinc-200 dark:border-zinc-700/80 shadow-md p-2">
+                    <img src="/icon.svg" alt="Схематор" className="w-12 h-12 object-contain select-none" />
                   </div>
                   <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100 mb-2">
                     Создание ГОСТ блок-схемы
                   </h3>
-                  <p className="text-zinc-500 dark:text-zinc-400 text-sm mb-6 leading-relaxed">
-                    Введите или вставьте исходный код в редактор слева и нажмите <strong className="text-blue-600 dark:text-blue-400">«Создать схему»</strong>.
+                  <p className="text-zinc-500 dark:text-zinc-400 text-sm mb-4 leading-relaxed">
+                    Введите или вставьте исходный код в редактор слева и нажмите <strong className="text-blue-600 dark:text-blue-400 font-semibold">«Создать схему»</strong>.
                   </p>
-                  <button 
-                    onClick={handleGenerateClick}
-                    disabled={isGenerating || !code.trim()}
-                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold px-6 py-3 rounded-xl shadow-lg shadow-blue-500/20 transition transform hover:scale-105 text-sm"
-                  >
-                    <Play className="w-4 h-4 fill-white" />
-                    <span>{isGenerating ? "Генерация схемы..." : "Создать схему (1 токен)"}</span>
-                  </button>
                   {!user ? (
-                    <div className="mt-3 flex flex-col items-center gap-1.5">
-                      <span className="text-xs text-zinc-400 dark:text-zinc-500">
-                        При входе через Google или Почту начисляется 1 токен бесплатно
-                      </span>
-                      <button
-                        onClick={handleLogin}
-                        className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline"
-                      >
-                        Войти в аккаунт →
-                      </button>
-                    </div>
+                    <span className="text-xs text-zinc-400 dark:text-zinc-500">
+                      При входе через Яндекс ID или Почту начисляется 1 токен бесплатно
+                    </span>
                   ) : null}
                   {authError && (
                     <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-600 dark:text-red-300 max-w-sm text-left">
@@ -1518,15 +1618,9 @@ const downloadDrawio = (title: string, fontFamily: string) => {
       </main>
 
       {!viewMode && (
-        <footer className="h-8 border-t border-zinc-200 dark:border-zinc-800/80 bg-white dark:bg-[#232328] flex items-center px-6 text-[10px] text-zinc-500 dark:text-zinc-400 font-medium shrink-0 justify-between relative z-30 transition-colors duration-300">
-          <div className="flex items-center gap-4">
-            <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> <span className="hidden sm:inline">AST Parser Connected</span></span>
-            <span className="hidden sm:inline h-3 w-[1px] bg-zinc-200 dark:bg-zinc-700"></span>
-            <span className="hidden sm:inline">Format: SVG/Vector</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <span>Python 3.x Dialect</span>
-            <span>UTF-8</span>
+        <footer className="h-7 border-t border-zinc-200 dark:border-zinc-800/80 bg-white dark:bg-[#232328] flex items-center px-6 text-[11px] text-zinc-400 dark:text-zinc-500 font-medium shrink-0 justify-between relative z-30 transition-colors duration-300 select-none">
+          <div>
+            <span>ГОСТ 19.701-90</span>
           </div>
         </footer>
       )}

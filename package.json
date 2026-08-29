@@ -4,16 +4,21 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
-    "preview": "vite preview",
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@vitejs/plugin-react": "^5.0.4",
+    "cors": "^2.8.6",
+    "esbuild": "^0.28.2",
+    "express": "^5.2.1",
     "firebase": "^12.18.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
@@ -22,7 +27,9 @@
     "react-dom": "^19.0.1",
     "react-simple-code-editor": "^0.14.1",
     "react-zoom-pan-pinch": "^4.0.3",
-    "vite": "^6.2.3"
+    "tsx": "^4.23.12",
+    "vite": "^6.2.3",
+    "ydb-sdk": "^5.11.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

@@ -31,6 +31,7 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { saveYdbDiagramItem, fetchYdbDiagrams } from './ydbClient';
 import { AppUserProfile } from './App';
 
 export interface SavedDiagram {
@@ -118,6 +119,20 @@ export const DiagramHistory: React.FC<DiagramHistoryProps> = ({
         });
 
         setDiagrams(items);
+
+        // Also fetch from YDB
+        fetchYdbDiagrams(user.uid).then((ydbItems) => {
+          if (ydbItems && ydbItems.length > 0) {
+            setDiagrams(prev => {
+              const ids = new Set(prev.map(p => p.id));
+              const newOnes = ydbItems.filter(y => !ids.has(y.id)) as SavedDiagram[];
+              if (newOnes.length > 0) {
+                return [...prev, ...newOnes];
+              }
+              return prev;
+            });
+          }
+        }).catch(() => {});
       }, (error) => {
         console.warn('Diagrams snapshot error:', error);
       });
@@ -160,6 +175,9 @@ export const DiagramHistory: React.FC<DiagramHistoryProps> = ({
         console.error('Error saving to Firestore:', e);
         onNotify('Ошибка сохранения в облако');
       }
+
+      // Mirror save to Yandex Database (YDB)
+      saveYdbDiagramItem(user.uid, newDiagram).catch(() => {});
     } else {
       // Save locally
       const updated = [newDiagram, ...diagrams];
