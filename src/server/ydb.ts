@@ -13,19 +13,57 @@ export const ENDPOINT = RAW_ENDPOINT.trim();
 let driver: Driver | null = null;
 let tablesInitialized = false;
 
-export function parseServiceAccountKey() {
-  function fixPem(pem: string) {
-    const match = pem.match(/-----BEGIN PRIVATE KEY-----([\s\S]+?)-----END PRIVATE KEY-----/);
-    if (!match) return pem; // Fallback if no markers
-    const cleaned = match[1].replace(/\s+/g, '');
-    let formatted = `-----BEGIN PRIVATE KEY-----\n`;
-    for (let i = 0; i < cleaned.length; i += 64) {
-      formatted += cleaned.substring(i, i + 64) + '\n';
+export function normalizePrivateKey(pemOrKey: string): string {
+  if (!pemOrKey || typeof pemOrKey !== 'string') return '';
+  
+  const normalized = pemOrKey
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
+
+  try {
+    const pk = crypto.createPrivateKey(normalized);
+    return pk.export({ type: 'pkcs8', format: 'pem' }).toString();
+  } catch (_) {}
+
+  let b64 = normalized;
+  const beginMarker = '-----BEGIN PRIVATE KEY-----';
+  const endMarker = '-----END PRIVATE KEY-----';
+  const beginIdx = b64.indexOf(beginMarker);
+  const endIdx = b64.indexOf(endMarker);
+
+  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
+    b64 = b64.substring(beginIdx + beginMarker.length, endIdx);
+  } else {
+    const rsaBegin = '-----BEGIN RSA PRIVATE KEY-----';
+    const rsaEnd = '-----END RSA PRIVATE KEY-----';
+    const rBeginIdx = b64.indexOf(rsaBegin);
+    const rEndIdx = b64.indexOf(rsaEnd);
+    if (rBeginIdx !== -1 && rEndIdx !== -1 && rEndIdx > rBeginIdx) {
+      b64 = b64.substring(rBeginIdx + rsaBegin.length, rEndIdx);
     }
-    formatted += `-----END PRIVATE KEY-----\n`;
-    return formatted;
   }
 
+  b64 = b64.replace(/[^A-Za-z0-9+/=]/g, '');
+
+  let formatted = '-----BEGIN PRIVATE KEY-----\n';
+  for (let i = 0; i < b64.length; i += 64) {
+    formatted += b64.substring(i, i + 64) + '\n';
+  }
+  formatted += '-----END PRIVATE KEY-----\n';
+
+  try {
+    const pk = crypto.createPrivateKey(formatted);
+    return pk.export({ type: 'pkcs8', format: 'pem' }).toString();
+  } catch (err: any) {
+    return formatted;
+  }
+}
+
+export function parseServiceAccountKey() {
   const rawKey = process.env.YDB_SA_KEY;
   if (rawKey && rawKey.trim()) {
     try {
@@ -35,16 +73,14 @@ export function parseServiceAccountKey() {
         : Buffer.from(trimmed, 'base64').toString('utf-8');
       const parsed = JSON.parse(jsonStr);
 
-      let privKeyStr = parsed.private_key || parsed.privateKey || '';
-      if (typeof privKeyStr === 'string') {
-        privKeyStr = fixPem(privKeyStr);
-      }
+      const privKeyStr = parsed.private_key || parsed.privateKey || '';
+      const normalizedKey = normalizePrivateKey(privKeyStr);
 
       return {
         serviceAccountId: parsed.service_account_id || parsed.serviceAccountId || '',
         accessKeyId: parsed.id || parsed.accessKeyId || '',
         iamEndpoint: parsed.iamEndpoint || 'iam.api.cloud.yandex.net:443',
-        privateKey: Buffer.from(privKeyStr),
+        privateKey: Buffer.from(normalizedKey),
       };
     } catch (err: any) {
       console.error('Failed to parse YDB_SA_KEY:', err.message);
@@ -52,12 +88,12 @@ export function parseServiceAccountKey() {
   }
 
   const privKey = process.env.YDB_PRIVATE_KEY;
-  if (privKey) {
+  if (privKey && privKey.trim()) {
     return {
       serviceAccountId: process.env.YDB_SERVICE_ACCOUNT_ID || '',
       accessKeyId: process.env.YDB_ACCESS_KEY_ID || '',
       iamEndpoint: process.env.YDB_IAM_ENDPOINT || 'iam.api.cloud.yandex.net:443',
-      privateKey: Buffer.from(fixPem(privKey)),
+      privateKey: Buffer.from(normalizePrivateKey(privKey)),
     };
   }
 
@@ -67,7 +103,9 @@ export function parseServiceAccountKey() {
     accessKeyId: 'ajenr8ku9h3c3m6c3ern',
     iamEndpoint: 'iam.api.cloud.yandex.net:443',
     privateKey: Buffer.from(
-      '-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCcS3o+b0um91Pu\nOO2xWsAEi4sxk0vTiY7CJLxch3uCjFjjMSDWEvHOROaNFwrpWaaSL14ZjIBoaBLR\nqEejoxrK6/rsfn9y1q+pZDUvFCXt9mJEPwoEsuRv9Im8okVqTuzPXncrAl9+qa4b\nrKgzI21BMYU8kOljQEKEaDa3aYgtAXQW+K5p0WNBGcFhOqpyxwsK1C7bID/rbj4q\nymkLwmjshQkpu7z59FcepzjjA5XE7274d9HwB/sbyBM1u+UaaI7rphC+bVMTzcCw\ngzVQ80jSFrfoGnvvJvwGA4IW/YzwLT7zzec0UYsFwHuQJEuRpHV40PfVpyshyxQ+\njnwA15uJAgMBAAECggEAR9hyUyz6C8B5tnI44WQkDHLRA3MAUjdThm84nxgwcGxv\nl9BHleCTgwwtJwJGo8nwRha8HOZ3SIc+z12ZwOEDOfCMIhZsI7AIg8dqoz+Rx/eQ\naGrKAirx030Hq8y0OBAbz59PDFhE6Ya6YEJX91n7qRJIevTqNBOgABmfvWQnkvf1\n5prOwylA1OoTc7rwug+A3ytOUdA3Se4RoHU8BBbuQCESXSeVkrMKZLJKGJeq2TM2\n1sCMBKJ7veLNcFehvtZyT4bPdzLMUpzKeemQo7WfnB2ijSlKfsqub57TzJIYHfap\nToNXmZXvCsFWQIUW61zahmTXYtKojMd0YfbL3uOSOQKBgQC9Zgk+2LHfMusH5tNj\n5zIlHiT91LJaCQIlXE/7O8zmiYrhkhKsvpZE4pgq3vxS3MFSoRjAcQW4TlekbNfl\nu2Uadjrx2FldV5gJpieDeYF5QZUO7lJF51Z6H3tlm5DJwE7lfpNX0RqeAQ/AC3gU\nUps7PuQzv+f6QwxvSiryyTTsuwKBgQDTQWOjUVtOKXPF9E6pmi26lLK/c/5MLYem\naCRtxGCPS0ZFuR/jZVuL8KlzP8kqUwvDTaNmXEzZnZNqL6+eCP+sFZ+cV0OrdCyh\nWTdJPePSKr7AoFqt6iF2aL0kOFhpypHthyLifJNS6oxjVLe1mjNgcCUs2MRyoTAP\nnzt/G5kWiwKBgCFpI45jmZUfHVjqfjXsbesgUzQ31jKNzkQa8b0HApFUiBxcsVCp\n2kZSlrdRWL+hU7Uo1/3ysiieIVXPIZLUKPSvEJzjJniR4C8rkWLfB1kFma7lmbvd\nIGMwtIrrE3KTqxdO6d0e9QwUcdvV6hvjqqCb6pO6ccizFTl4ovTrS5vLAoGAQ/xg\nN3gAPVhDxOoJwrU2kDw4hjqrFRL1+8y6JIU1WggsllWseH7vBksuDUPy1mchevnq\nYw/DP6lhfqPYDbDxrwzKcAL5aR0bG9XdX/nF7qYI+27fn+agXD362MQ1V950Ng/u\nXxseQmnvQixKbuwwKpIMtLESD53mHLDu8coM618CgYARaQxQs7gZPxSIbw167hL3\n8qb+cwkg29wlCUgMZfFOsuXEoJhl1rTtTxC0ruQfRSVJ/G3XM4C4hUA1/BHta6TP\nWio1eSh9E5g85iTZJN74I5I73OZAfQ4XJ9mK/jazjFjs5M2Gv/dFTEcxO6kccTY4\n7S5DS7gR9NHQI8dCQ0G8FA==\n-----END PRIVATE KEY-----\n'
+      normalizePrivateKey(
+        '-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCcS3o+b0um91Pu\nOO2xWsAEi4sxk0vTiY7CJLxch3uCjFjjMSDWEvHOROaNFwrpWaaSL14ZjIBoaBLR\nqEejoxrK6/rsfn9y1q+pZDUvFCXt9mJEPwoEsuRv9Im8okVqTuzPXncrAl9+qa4b\nrKgzI21BMYU8kOljQEKEaDa3aYgtAXQW+K5p0WNBGcFhOqpyxwsK1C7bID/rbj4q\nymkLwmjshQkpu7z59FcepzjjA5XE7274d9HwB/sbyBM1u+UaaI7rphC+bVMTzcCw\ngzVQ80jSFrfoGnvvJvwGA4IW/YzwLT7zzec0UYsFwHuQJEuRpHV40PfVpyshyxQ+\njnwA15uJAgMBAAECggEAR9hyUyz6C8B5tnI44WQkDHLRA3MAUjdThm84nxgwcGxv\nl9BHleCTgwwtJwJGo8nwRha8HOZ3SIc+z12ZwOEDOfCMIhZsI7AIg8dqoz+Rx/eQ\naGrKAirx030Hq8y0OBAbz59PDFhE6Ya6YEJX91n7qRJIevTqNBOgABmfvWQnkvf1\n5prOwylA1OoTc7rwug+A3ytOUdA3Se4RoHU8BBbuQCESXSeVkrMKZLJKGJeq2TM2\n1sCMBKJ7veLNcFehvtZyT4bPdzLMUpzKeemQo7WfnB2ijSlKfsqub57TzJIYHfap\nToNXmZXvCsFWQIUW61zahmTXYtKojMd0YfbL3uOSOQKBgQC9Zgk+2LHfMusH5tNj\n5zIlHiT91LJaCQIlXE/7O8zmiYrhkhKsvpZE4pgq3vxS3MFSoRjAcQW4TlekbNfl\nu2Uadjrx2FldV5gJpieDeYF5QZUO7lJF51Z6H3tlm5DJwE7lfpNX0RqeAQ/AC3gU\nUps7PuQzv+f6QwxvSiryyTTsuwKBgQDTQWOjUVtOKXPF9E6pmi26lLK/c/5MLYem\naCRtxGCPS0ZFuR/jZVuL8KlzP8kqUwvDTaNmXEzZnZNqL6+eCP+sFZ+cV0OrdCyh\nWTdJPePSKr7AoFqt6iF2aL0kOFhpypHthyLifJNS6oxjVLe1mjNgcCUs2MRyoTAP\nnzt/G5kWiwKBgCFpI45jmZUfHVjqfjXsbesgUzQ31jKNzkQa8b0HApFUiBxcsVCp\n2kZSlrdRWL+hU7Uo1/3ysiieIVXPIZLUKPSvEJzjJniR4C8rkWLfB1kFma7lmbvd\nIGMwtIrrE3KTqxdO6d0e9QwUcdvV6hvjqqCb6pO6ccizFTl4ovTrS5vLAoGAQ/xg\nN3gAPVhDxOoJwrU2kDw4hjqrFRL1+8y6JIU1WggsllWseH7vBksuDUPy1mchevnq\nYw/DP6lhfqPYDbDxrwzKcAL5aR0bG9XdX/nF7qYI+27fn+agXD362MQ1V950Ng/u\nXxseQmnvQixKbuwwKpIMtLESD53mHLDu8coM618CgYARaQxQs7gZPxSIbw167hL3\n8qb+cwkg29wlCUgMZfFOsuXEoJhl1rTtTxC0ruQfRSVJ/G3XM4C4hUA1/BHta6TP\nWio1eSh9E5g85iTZJN74I5I73OZAfQ4XJ9mK/jazjFjs5M2Gv/dFTEcxO6kccTY4\n7S5DS7gR9NHQI8dCQ0G8FA==\n-----END PRIVATE KEY-----\n'
+      )
     ),
   };
 }
@@ -85,10 +123,7 @@ export async function getYdbDriver(): Promise<Driver> {
   const dbPath = DATABASE.startsWith('/') ? DATABASE : `/${DATABASE}`;
   const connectionString = `${isSecure ? 'grpcs' : 'grpc'}://${cleanEndpoint}${dbPath}`;
 
-  // FIX: The ydb-sdk has a known bug where it uses process.env.YDB_ENDPOINT directly
-  // inside endpoint.js for DNS resolution. If the user set YDB_ENDPOINT with /?database=
-  // this causes a grpc-js DNS parse error. We MUST sanitize the env variable here.
-  process.env.YDB_ENDPOINT = `${isSecure ? 'grpcs' : 'grpc'}://${cleanEndpoint}`;
+  delete process.env.YDB_ENDPOINT;
   console.log('[YDB] Using connection string:', connectionString);
   console.log('[YDB] Sanitized process.env.YDB_ENDPOINT:', process.env.YDB_ENDPOINT);
 
