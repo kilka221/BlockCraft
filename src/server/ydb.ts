@@ -14,6 +14,18 @@ let driver: Driver | null = null;
 let tablesInitialized = false;
 
 export function parseServiceAccountKey() {
+  function fixPem(pem: string) {
+    const match = pem.match(/-----BEGIN PRIVATE KEY-----([\s\S]+?)-----END PRIVATE KEY-----/);
+    if (!match) return pem; // Fallback if no markers
+    const cleaned = match[1].replace(/\s+/g, '');
+    let formatted = `-----BEGIN PRIVATE KEY-----\n`;
+    for (let i = 0; i < cleaned.length; i += 64) {
+      formatted += cleaned.substring(i, i + 64) + '\n';
+    }
+    formatted += `-----END PRIVATE KEY-----\n`;
+    return formatted;
+  }
+
   const rawKey = process.env.YDB_SA_KEY;
   if (rawKey && rawKey.trim()) {
     try {
@@ -23,14 +35,9 @@ export function parseServiceAccountKey() {
         : Buffer.from(trimmed, 'base64').toString('utf-8');
       const parsed = JSON.parse(jsonStr);
 
-      // Extract private key string and normalize \n
       let privKeyStr = parsed.private_key || parsed.privateKey || '';
       if (typeof privKeyStr === 'string') {
-        privKeyStr = privKeyStr.replace(/\\n/g, '\n');
-        const pemMatch = privKeyStr.match(/-----BEGIN PRIVATE KEY-----[\s\S]+?-----END PRIVATE KEY-----/);
-        if (pemMatch) {
-          privKeyStr = pemMatch[0];
-        }
+        privKeyStr = fixPem(privKeyStr);
       }
 
       return {
@@ -50,7 +57,7 @@ export function parseServiceAccountKey() {
       serviceAccountId: process.env.YDB_SERVICE_ACCOUNT_ID || '',
       accessKeyId: process.env.YDB_ACCESS_KEY_ID || '',
       iamEndpoint: process.env.YDB_IAM_ENDPOINT || 'iam.api.cloud.yandex.net:443',
-      privateKey: Buffer.from(privKey.replace(/\\n/g, '\n')),
+      privateKey: Buffer.from(fixPem(privKey)),
     };
   }
 
