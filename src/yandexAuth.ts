@@ -9,32 +9,43 @@ export interface YandexUserProfile {
 }
 
 export async function fetchYandexProfileByToken(accessToken: string): Promise<YandexUserProfile> {
-  const resp = await fetch(`/api/yandex/userinfo?token=${encodeURIComponent(accessToken)}`);
-  let json: any;
   try {
-    json = await resp.json();
-  } catch (e) {
-    throw new Error('Ошибка связи с сервером Яндекс авторизации. Пожалуйста, попробуйте еще раз.');
+    const resp = await fetch(`/api/yandex/userinfo?token=${encodeURIComponent(accessToken)}`);
+    const contentType = resp.headers.get('content-type') || '';
+
+    let json: any = null;
+    if (contentType.includes('application/json')) {
+      json = await resp.json();
+    } else {
+      const rawText = await resp.text();
+      console.warn('[Yandex Auth] non-JSON response from API:', resp.status, rawText.slice(0, 100));
+      throw new Error('Сервер Яндекс авторизации недоступен. Используйте вход по логину ниже.');
+    }
+
+    if (!resp.ok || !json.success || !json.data) {
+      const errorMsg = json.error || json.details || 'Не удалось получить данные профиля Яндекс';
+      throw new Error(errorMsg);
+    }
+
+    const data = json.data;
+    const email = data.default_email || (data.emails && data.emails[0]) || `${data.login}@yandex.ru`;
+    const avatarUrl = data.default_avatar_id
+      ? `https://avatars.yandex.net/get-yapic/${data.default_avatar_id}/islands-200`
+      : undefined;
+
+    return {
+      uid: `yandex_${data.id || data.login}`,
+      email: email,
+      displayName: data.real_name || data.display_name || data.first_name || data.login || 'Пользователь Яндекс',
+      photoURL: avatarUrl,
+      providerId: 'yandex.ru',
+    };
+  } catch (err: any) {
+    if (err.message && (err.message.includes('Unexpected token') || err.message.includes('is not valid JSON'))) {
+      throw new Error('Не удалось войти через всплывающее окно. Используйте быстрый вход по логину ниже.');
+    }
+    throw err;
   }
-
-  if (!resp.ok || !json.success || !json.data) {
-    const errorMsg = json.error || 'Не удалось получить данные профиля Яндекс';
-    throw new Error(errorMsg);
-  }
-
-  const data = json.data;
-  const email = data.default_email || (data.emails && data.emails[0]) || `${data.login}@yandex.ru`;
-  const avatarUrl = data.default_avatar_id
-    ? `https://avatars.yandex.net/get-yapic/${data.default_avatar_id}/islands-200`
-    : undefined;
-
-  return {
-    uid: `yandex_${data.id || data.login}`,
-    email: email,
-    displayName: data.real_name || data.display_name || data.first_name || data.login || 'Пользователь Яндекс',
-    photoURL: avatarUrl,
-    providerId: 'yandex.ru',
-  };
 }
 
 export const YANDEX_CLIENT_ID = 'c0f4c3f30ccf47088a44f3262ed4fe32';

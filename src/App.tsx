@@ -137,6 +137,13 @@ export default function App() {
         setUser(appUser);
         setAuthError(null);
 
+        // Sync with Yandex Database (YDB Serverless) as primary DB
+        syncYdbUser(u.uid, u.email, appUser.displayName).then(() => {
+          getYdbUserTokens(u.uid).then((tok) => {
+            if (tok !== undefined) setUserTokens(tok);
+          });
+        });
+
         if (unsubscribeDoc) {
           unsubscribeDoc();
           unsubscribeDoc = null;

@@ -62,7 +62,7 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
     // Check if exists
     const checkQuery = `
       DECLARE $userId AS Utf8;
-      SELECT userId, tokens FROM users WHERE userId = $userId;
+      SELECT userId, tokens, email, displayName FROM users WHERE userId = $userId;
     `;
     const prepCheck = await session.prepareQuery(checkQuery);
     const checkRes = await session.executeQuery(prepCheck, {
@@ -70,30 +70,34 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
     });
 
     const rows = checkRes.resultSets[0]?.rows;
-    if (!rows || rows.length === 0) {
-      const upsertQuery = `
-        DECLARE $userId AS Utf8;
-        DECLARE $email AS Utf8;
-        DECLARE $displayName AS Utf8;
-        DECLARE $tokens AS Int64;
-        DECLARE $createdAt AS Utf8;
+    let tokensToKeep = 1;
 
-        UPSERT INTO users (userId, email, displayName, tokens, createdAt)
-        VALUES ($userId, $email, $displayName, $tokens, $createdAt);
-      `;
-      const prepUpsert = await session.prepareQuery(upsertQuery);
-      await session.executeQuery(prepUpsert, {
-        $userId: TypedValues.utf8(userId),
-        $email: TypedValues.utf8(email || ''),
-        $displayName: TypedValues.utf8(displayName || 'Пользователь'),
-        $tokens: TypedValues.int64(1),
-        $createdAt: TypedValues.utf8(new Date().toISOString()),
-      });
-      return { tokens: 1 };
-    } else {
+    if (rows && rows.length > 0) {
       const existing = TypedData.createNativeObjects(checkRes.resultSets[0])[0];
-      return { tokens: Number(existing.tokens) || 1 };
+      tokensToKeep = Number(existing.tokens) || 1;
     }
+
+    const upsertQuery = `
+      DECLARE $userId AS Utf8;
+      DECLARE $email AS Utf8;
+      DECLARE $displayName AS Utf8;
+      DECLARE $tokens AS Int64;
+      DECLARE $createdAt AS Utf8;
+
+      UPSERT INTO users (userId, email, displayName, tokens, createdAt)
+      VALUES ($userId, $email, $displayName, $tokens, $createdAt);
+    `;
+    const prepUpsert = await session.prepareQuery(upsertQuery);
+    await session.executeQuery(prepUpsert, {
+      $userId: TypedValues.utf8(userId),
+      $email: TypedValues.utf8(email || ''),
+      $displayName: TypedValues.utf8(displayName || 'Пользователь'),
+      $tokens: TypedValues.int64(tokensToKeep),
+      $createdAt: TypedValues.utf8(new Date().toISOString()),
+    });
+
+    console.log(`[YDB] Saved user to Yandex Cloud YDB: userId=${userId}, email=${email}, displayName=${displayName}, tokens=${tokensToKeep}`);
+    return { tokens: tokensToKeep };
   });
 }
 

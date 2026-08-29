@@ -10,73 +10,57 @@ export interface YdbDiagramItem {
   updatedAt: string;
 }
 
-export async function syncYdbUser(uid: string, email?: string | null, displayName?: string | null) {
+async function safeFetchJson(url: string, options?: RequestInit) {
   try {
-    const res = await fetch('/api/users/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid, email, displayName }),
-    });
-    return await res.json();
+    const res = await fetch(url, options);
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      return await res.json();
+    }
+    return null;
   } catch (e) {
-    console.warn('YDB sync client notice:', e);
+    console.warn('safeFetchJson error:', e);
     return null;
   }
+}
+
+export async function syncYdbUser(uid: string, email?: string | null, displayName?: string | null) {
+  return await safeFetchJson('/api/users/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uid, email, displayName }),
+  });
 }
 
 export async function getYdbUserTokens(uid: string): Promise<number> {
-  try {
-    const res = await fetch(`/api/users/${encodeURIComponent(uid)}`);
-    const data = await res.json();
-    if (data.success && data.user) {
-      return data.user.tokens ?? 1;
-    }
-    return 1;
-  } catch (e) {
-    console.warn('YDB fetch tokens notice:', e);
-    return 1;
+  const data = await safeFetchJson(`/api/users/${encodeURIComponent(uid)}`);
+  if (data && data.success && data.user) {
+    return data.user.tokens ?? 1;
   }
+  return 1;
 }
 
 export async function decrementYdbUserToken(uid: string): Promise<number> {
-  try {
-    const res = await fetch('/api/users/decrement-token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid }),
-    });
-    const data = await res.json();
-    return data.tokens ?? 0;
-  } catch (e) {
-    console.warn('YDB decrement token notice:', e);
-    return 0;
-  }
+  const data = await safeFetchJson('/api/users/decrement-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uid }),
+  });
+  return data?.tokens ?? 0;
 }
 
 export async function saveYdbDiagramItem(uid: string, diagram: YdbDiagramItem) {
-  try {
-    const res = await fetch('/api/diagrams/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid, diagram }),
-    });
-    return await res.json();
-  } catch (e) {
-    console.warn('YDB save diagram notice:', e);
-    return null;
-  }
+  return await safeFetchJson('/api/diagrams/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uid, diagram }),
+  });
 }
 
 export async function fetchYdbDiagrams(uid: string): Promise<YdbDiagramItem[]> {
-  try {
-    const res = await fetch(`/api/diagrams/${encodeURIComponent(uid)}`);
-    const data = await res.json();
-    if (data.success && Array.isArray(data.diagrams)) {
-      return data.diagrams;
-    }
-    return [];
-  } catch (e) {
-    console.warn('YDB fetch diagrams notice:', e);
-    return [];
+  const data = await safeFetchJson(`/api/diagrams/${encodeURIComponent(uid)}`);
+  if (data && data.success && Array.isArray(data.diagrams)) {
+    return data.diagrams;
   }
+  return [];
 }

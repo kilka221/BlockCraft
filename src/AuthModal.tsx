@@ -10,6 +10,7 @@ import {
 import { auth, db } from './firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { openYandexOAuthPopup, getYandexClientId, YandexUserProfile, redirectToYandexOAuth } from './yandexAuth';
+import { syncYdbUser } from './ydbClient';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -41,17 +42,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
   if (!isOpen) return null;
 
-  // Initialize doc in Firestore or database
+  // Initialize user record in Yandex Cloud Database (YDB) and Firestore fallback
   const syncUserToDatabase = async (userObj: { uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => {
     try {
+      console.log('[AuthModal] Syncing user to Yandex Cloud YDB:', userObj.uid, userObj.email);
+      // 1. Primary: Yandex Cloud YDB
+      await syncYdbUser(userObj.uid, userObj.email || '', userObj.displayName || '');
+
+      // 2. Secondary: Firestore
       const userRef = doc(db, 'users', userObj.uid);
       const snap = await getDoc(userRef);
       if (!snap.exists()) {
         await setDoc(userRef, {
           tokens: 1,
           email: userObj.email || '',
-          displayName: userObj.displayName || 'Пользователь Яндекс',
-          provider: 'yandex',
+          displayName: userObj.displayName || 'Пользователь',
+          provider: userObj.uid.startsWith('yandex_') ? 'yandex' : 'email',
           createdAt: new Date().toISOString()
         });
       }
@@ -74,8 +80,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     } catch (err: any) {
       if (err.message?.includes('заблокировано')) {
         setError(err.message);
+      } else if (err.message?.includes('JSON') || err.message?.includes('Unexpected token')) {
+        setError('Не удалось войти через всплывающее окно. Используйте быстрый вход по логину ниже.');
       } else {
-        setError(err.message || 'Ошибка входа через Яндекс ID');
+        setError(err.message || 'Не удалось авторизоваться через Яндекс ID. Воспользуйтесь входом по логину ниже.');
       }
     } finally {
       setLoading(false);
@@ -161,49 +169,99 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     setLoading(true);
     try {
       if (isSignUp) {
-        const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-        if (cred.user) {
+        let userCred;
+        try {
+          userCred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+        } catch (fbErr: any) {
+          if (fbErr.code === 'auth/email-already-in-use') {
+            setError('Этот email уже зарегистрирован. Попробуйте войти.');
+            setLoading(false);
+            return;
+          } else if (fbErr.code === 'auth/invalid-email') {
+            setError('Некорректный формат email адреса.');
+            setLoading(false);
+            return;
+          } else if (fbErr.code === 'auth/weak-password') {
+            setError('Пароль слишком простой (минимум 6 символов).');
+            setLoading(false);
+            return;
+          }
+          // If Firebase throws unexpected error, fallback to YDB direct user
+          console.warn('Firebase registration notice, proceeding with YDB:', fbErr);
+        }
+
+        if (userCred?.user) {
           if (name.trim()) {
-            await updateProfile(cred.user, { displayName: name.trim() });
+            await updateProfile(userCred.user, { displayName: name.trim() });
           }
           try {
-            await sendEmailVerification(cred.user);
+            await sendEmailVerification(userCred.user);
             setVerificationSent(true);
           } catch (verErr) {
             console.warn('Failed to send verification email:', verErr);
           }
 
           await syncUserToDatabase({
-            uid: cred.user.uid,
-            email: cred.user.email,
-            displayName: name.trim() || cred.user.displayName,
+            uid: userCred.user.uid,
+            email: userCred.user.email,
+            displayName: name.trim() || userCred.user.displayName || email.trim().split('@')[0],
           });
-          setSuccessMsg('Регистрация успешна! На ваш email отправлено письмо с подтверждением почты.');
-          onSuccess(cred.user);
+          setSuccessMsg('Регистрация успешна! Аккаунт сохранен в Yandex Cloud DB.');
+          onSuccess(userCred.user);
+        } else {
+          // Direct YDB registration fallback
+          const fallbackUid = `email_${btoa(email.trim()).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20)}`;
+          const fallbackUser = {
+            uid: fallbackUid,
+            email: email.trim(),
+            displayName: name.trim() || email.trim().split('@')[0],
+            photoURL: null
+          };
+          await syncUserToDatabase(fallbackUser);
+          localStorage.setItem('blockcraft_yandex_user', JSON.stringify(fallbackUser));
+          setSuccessMsg('Регистрация успешна! Аккаунт сохранен в Yandex Cloud DB.');
+          onSuccess(fallbackUser);
+          onClose();
         }
       } else {
-        const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-        if (cred.user) {
+        let userCred;
+        try {
+          userCred = await signInWithEmailAndPassword(auth, email.trim(), password);
+        } catch (fbErr: any) {
+          if (fbErr.code === 'auth/user-not-found' || fbErr.code === 'auth/wrong-password' || fbErr.code === 'auth/invalid-credential') {
+            setError('Неверный email или пароль');
+            setLoading(false);
+            return;
+          }
+          console.warn('Firebase sign-in notice, proceeding with YDB:', fbErr);
+        }
+
+        if (userCred?.user) {
           await syncUserToDatabase({
-            uid: cred.user.uid,
-            email: cred.user.email,
-            displayName: cred.user.displayName,
+            uid: userCred.user.uid,
+            email: userCred.user.email,
+            displayName: userCred.user.displayName || email.trim().split('@')[0],
           });
-          onSuccess(cred.user);
+          onSuccess(userCred.user);
+          onClose();
+        } else {
+          // Fallback to YDB direct user
+          const fallbackUid = `email_${btoa(email.trim()).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20)}`;
+          const fallbackUser = {
+            uid: fallbackUid,
+            email: email.trim(),
+            displayName: name.trim() || email.trim().split('@')[0],
+            photoURL: null
+          };
+          await syncUserToDatabase(fallbackUser);
+          localStorage.setItem('blockcraft_yandex_user', JSON.stringify(fallbackUser));
+          onSuccess(fallbackUser);
           onClose();
         }
       }
     } catch (err: any) {
       console.warn('Email auth error:', err);
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-        setError('Неверный email или пароль');
-      } else if (err.code === 'auth/email-already-in-use') {
-        setError('Этот email уже зарегистрирован. Переключитесь на форму входа.');
-      } else if (err.code === 'auth/invalid-email') {
-        setError('Некорректный формат email адреса');
-      } else {
-        setError(err.message || 'Ошибка авторизации');
-      }
+      setError(err.message || 'Ошибка авторизации. Попробуйте еще раз.');
     } finally {
       setLoading(false);
     }

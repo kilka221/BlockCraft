@@ -11,18 +11,21 @@ async function startServer() {
   app.use(cors());
   app.use(express.json());
 
+  // API Router
+  const apiRouter = express.Router();
+
   // Healthcheck & YDB status
-  app.get('/api/health', (req, res) => {
+  apiRouter.get('/health', (req, res) => {
     res.json({ status: 'ok', database: 'Yandex Database (YDB Serverless)', region: 'ru-central1' });
   });
 
   // Yandex OAuth Userinfo Proxy
-  app.get('/api/yandex/userinfo', async (req, res) => {
+  apiRouter.get('/yandex/userinfo', async (req, res) => {
     console.log('[API] /api/yandex/userinfo request received:', req.query);
     try {
       const token = req.query.token as string;
       if (!token) {
-        return res.status(400).json({ error: 'Token is required' });
+        return res.status(400).json({ success: false, error: 'Token is required' });
       }
 
       const response = await fetch('https://login.yandex.ru/info?format=json', {
@@ -47,7 +50,7 @@ async function startServer() {
   });
 
   // User Profile & Tokens API (YDB)
-  app.get('/api/users/:uid', async (req, res) => {
+  apiRouter.get('/users/:uid', async (req, res) => {
     try {
       const { uid } = req.params;
       const user = await getYdbUser(uid);
@@ -58,10 +61,10 @@ async function startServer() {
     }
   });
 
-  app.post('/api/users/sync', async (req, res) => {
+  apiRouter.post('/users/sync', async (req, res) => {
     try {
       const { uid, email, displayName } = req.body;
-      if (!uid) return res.status(400).json({ error: 'uid is required' });
+      if (!uid) return res.status(400).json({ success: false, error: 'uid is required' });
       const result = await upsertYdbUser(uid, email || '', displayName || '');
       res.json({ success: true, result });
     } catch (e: any) {
@@ -70,10 +73,10 @@ async function startServer() {
     }
   });
 
-  app.post('/api/users/decrement-token', async (req, res) => {
+  apiRouter.post('/users/decrement-token', async (req, res) => {
     try {
       const { uid } = req.body;
-      if (!uid) return res.status(400).json({ error: 'uid is required' });
+      if (!uid) return res.status(400).json({ success: false, error: 'uid is required' });
       const newBalance = await decrementYdbToken(uid);
       res.json({ success: true, tokens: newBalance });
     } catch (e: any) {
@@ -83,7 +86,7 @@ async function startServer() {
   });
 
   // Diagrams API (YDB)
-  app.get('/api/diagrams/:uid', async (req, res) => {
+  apiRouter.get('/diagrams/:uid', async (req, res) => {
     try {
       const { uid } = req.params;
       const list = await getYdbDiagrams(uid);
@@ -94,16 +97,30 @@ async function startServer() {
     }
   });
 
-  app.post('/api/diagrams/save', async (req, res) => {
+  apiRouter.post('/diagrams/save', async (req, res) => {
     try {
       const { uid, diagram } = req.body;
-      if (!uid || !diagram) return res.status(400).json({ error: 'uid and diagram are required' });
+      if (!uid || !diagram) return res.status(400).json({ success: false, error: 'uid and diagram are required' });
       const result = await saveYdbDiagram(uid, diagram);
       res.json({ success: true, result });
     } catch (e: any) {
       console.error('YDB saveDiagram error:', e);
       res.status(500).json({ success: false, error: e.message });
     }
+  });
+
+  // Catch-all 404 for any unhandled /api/* route
+  apiRouter.use((req, res) => {
+    res.status(404).json({ success: false, error: 'API endpoint not found' });
+  });
+
+  // Mount API router
+  app.use('/api', apiRouter);
+
+  // Global Error Handler for API
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('[Express API Error]:', err);
+    res.status(500).json({ success: false, error: err.message || 'Внутренняя ошибка сервера' });
   });
 
   // Vite middleware in dev mode
