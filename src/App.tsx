@@ -7,12 +7,9 @@ import 'prismjs/components/prism-c';
 import 'prismjs/components/prism-cpp';
 import 'prismjs/themes/prism.css';
 
-import { auth, db } from './firebase';
-import { signOut, User, sendEmailVerification } from 'firebase/auth';
-import { doc, onSnapshot, setDoc, updateDoc, increment, getDoc } from 'firebase/firestore';
-import { syncYdbUser, getYdbUserTokens, decrementYdbUserToken } from './ydbClient';
+import { syncYdbUser, getYdbUserTokens, decrementYdbUserToken, saveYdbDiagramItem } from './ydbClient';
 import { fetchYandexProfileByToken } from './yandexAuth';
-import { Coins, LogIn, LogOut, Sparkles, ExternalLink, Wrench, AlertCircle } from 'lucide-react';
+import { Coins, LogIn, LogOut, Sparkles, AlertCircle } from 'lucide-react';
 import { AuthModal } from './AuthModal';
 import { DiagramHistory } from './DiagramHistory';
 
@@ -57,8 +54,6 @@ export default function App() {
   };
   
   React.useEffect(() => {
-    let unsubscribeDoc: (() => void) | null = null;
-
     // Check for Yandex OAuth response token in URL hash
     if (window.location.hash.includes('access_token')) {
       const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
@@ -92,104 +87,24 @@ export default function App() {
       }
     }
 
-    // Check for cached Yandex session and sync with Yandex Database (YDB)
-    const savedYandex = localStorage.getItem('blockcraft_yandex_user');
-    if (savedYandex) {
+    // Check for cached user session and sync with Yandex Database (YDB)
+    const savedUser = localStorage.getItem('blockcraft_yandex_user');
+    if (savedUser) {
       try {
-        const yUser = JSON.parse(savedYandex);
-        setUser(yUser);
+        const u = JSON.parse(savedUser);
+        setUser(u);
         setAuthError(null);
         
         // Sync with YDB Serverless
-        syncYdbUser(yUser.uid, yUser.email, yUser.displayName).then(() => {
-          getYdbUserTokens(yUser.uid).then((tok) => {
-            if (tok !== undefined) setUserTokens(tok);
-          });
-        });
-
-        const userRef = doc(db, 'users', yUser.uid);
-        unsubscribeDoc = onSnapshot(userRef, (snap) => {
-          if (snap.exists()) {
-            setUserTokens(snap.data()?.tokens ?? 1);
-          } else if (userTokens === null) {
-            setUserTokens(1);
-          }
-        }, () => {
-          // Fallback handled by YDB
-        });
-      } catch (e) {
-        console.warn('Error reading saved Yandex user:', e);
-      }
-    }
-
-    const unsubscribeAuth = auth.onAuthStateChanged(async (u) => {
-      if (localStorage.getItem('blockcraft_yandex_user')) {
-        return;
-      }
-      if (u) {
-        const appUser: AppUserProfile = {
-          uid: u.uid,
-          email: u.email,
-          displayName: u.displayName || u.email?.split('@')[0] || 'Пользователь',
-          photoURL: u.photoURL,
-          emailVerified: u.emailVerified
-        };
-        setUser(appUser);
-        setAuthError(null);
-
-        // Sync with Yandex Database (YDB Serverless) as primary DB
-        syncYdbUser(u.uid, u.email, appUser.displayName).then(() => {
+        syncYdbUser(u.uid, u.email, u.displayName).then(() => {
           getYdbUserTokens(u.uid).then((tok) => {
             if (tok !== undefined) setUserTokens(tok);
           });
         });
-
-        if (unsubscribeDoc) {
-          unsubscribeDoc();
-          unsubscribeDoc = null;
-        }
-
-        const userRef = doc(db, 'users', u.uid);
-        unsubscribeDoc = onSnapshot(userRef, async (snap) => {
-          if (!snap.exists()) {
-            try {
-              await setDoc(userRef, {
-                tokens: 1,
-                email: u.email || '',
-                displayName: u.displayName || u.email?.split('@')[0] || 'Пользователь',
-                emailVerified: u.emailVerified,
-                createdAt: new Date().toISOString()
-              });
-              setUserTokens(1);
-            } catch (err) {
-              console.warn('Could not initialize user tokens in Firestore:', err);
-              setUserTokens(1);
-            }
-          } else {
-            const data = snap.data();
-            const count = data?.tokens ?? 1;
-            setUserTokens(count);
-          }
-        }, (err) => {
-          console.warn('Firestore snapshot error, setting default token:', err);
-          if (userTokens === null) {
-            setUserTokens(1);
-          }
-        });
-      } else if (!localStorage.getItem('blockcraft_yandex_user')) {
-        setUser(null);
-        setUserTokens(null);
-        if (unsubscribeDoc) {
-          unsubscribeDoc();
-          unsubscribeDoc = null;
-        }
+      } catch (e) {
+        console.warn('Error reading saved user session:', e);
       }
-    });
-
-    return () => {
-      unsubscribeAuth();
-      if (unsubscribeDoc) unsubscribeDoc();
-    };
+    }
   }, []);
   
   const handleLogin = () => {
@@ -203,42 +118,18 @@ export default function App() {
       email: authUser.email,
       displayName: authUser.displayName || authUser.email?.split('@')[0] || 'Пользователь',
       photoURL: authUser.photoURL,
-      emailVerified: authUser.emailVerified
     };
     setUser(appUser);
+    localStorage.setItem('blockcraft_yandex_user', JSON.stringify(appUser));
     
     // Sync to Yandex Database (YDB Serverless)
     await syncYdbUser(authUser.uid, authUser.email, authUser.displayName);
-
-    // Fallback sync in Firestore
-    try {
-      const userRef = doc(db, 'users', authUser.uid);
-      const snap = await getDoc(userRef);
-      if (snap.exists()) {
-        const count = snap.data()?.tokens ?? 1;
-        setUserTokens(count);
-      } else {
-        await setDoc(userRef, {
-          tokens: 1,
-          email: authUser.email || '',
-          displayName: authUser.displayName || authUser.email?.split('@')[0] || 'Пользователь',
-          createdAt: new Date().toISOString()
-        });
-        setUserTokens(1);
-      }
-    } catch (err) {
-      console.warn('Database init error:', err);
-      setUserTokens(1);
-    }
+    const tok = await getYdbUserTokens(authUser.uid);
+    setUserTokens(tok ?? 1);
   };
 
   const handleLogout = async () => {
-    try {
-      localStorage.removeItem('blockcraft_yandex_user');
-      await signOut(auth);
-    } catch (error) {
-      console.warn('Logout notice:', error);
-    }
+    localStorage.removeItem('blockcraft_yandex_user');
     setUser(null);
     setUserTokens(null);
   };
@@ -445,25 +336,13 @@ const [leftWidth, setLeftWidth] = useState(480);
       setShowTopUp(false);
       try {
           // Decrement token in Yandex Database (YDB)
-          decrementYdbUserToken(user.uid).catch(() => {});
-
-          // Deduct token in Firestore and local state
-          try {
-              const userRef = doc(db, 'users', user.uid);
-              await updateDoc(userRef, {
-                  tokens: increment(-1)
-              });
-          } catch (fireErr) {
-              console.warn('Firestore token decrement notice:', fireErr);
-          }
-          const nextCount = Math.max(0, (userTokens ?? 1) - 1);
+          const nextCount = await decrementYdbUserToken(user.uid);
           setUserTokens(nextCount);
-          localStorage.setItem('blockcraft_custom_tokens', String(nextCount));
           
           setLastGeneratedCode(code);
           setLastGeneratedLanguage(language);
 
-          // Auto-save generated diagram to user's history
+          // Auto-save generated diagram to user's history in YDB
           if (code.trim()) {
             try {
               const diagId = `diag_${Date.now()}`;
@@ -480,10 +359,8 @@ const [leftWidth, setLeftWidth] = useState(480);
               }
 
               if (user) {
-                const diagRef = doc(db, 'users', user.uid, 'diagrams', diagId);
-                await setDoc(diagRef, {
+                await saveYdbDiagramItem(user.uid, {
                   id: diagId,
-                  userId: user.uid,
                   title: autoTitle,
                   code: code,
                   language: language,
@@ -979,49 +856,8 @@ const downloadDrawio = (title: string, fontFamily: string) => {
         </header>
       )}
 
-      {user && !user.emailVerified && !user.uid.startsWith('yandex_') && (
-        <div className="bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/60 px-6 py-2 text-xs text-amber-800 dark:text-amber-200 flex items-center justify-between gap-4 shrink-0 z-30">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <span>
-              Подтвердите ваш e-mail <strong>{user.email}</strong> для активации 1 бесплатного токена и создания схем.
-            </span>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={async () => {
-                if (auth.currentUser) {
-                  try {
-                    await sendEmailVerification(auth.currentUser);
-                    showToast('Письмо отправлено повторно! Проверьте вашу почту.');
-                  } catch (e: any) {
-                    showToast('Ошибка отправки: ' + (e.message || 'попробуйте позже'));
-                  }
-                }
-              }}
-              className="px-2.5 py-1 bg-amber-200/60 dark:bg-amber-900/60 hover:bg-amber-300/60 dark:hover:bg-amber-800/80 rounded font-semibold text-[11px] transition"
-            >
-              Отправить повторно
-            </button>
-            <button
-              onClick={async () => {
-                if (auth.currentUser) {
-                  await auth.currentUser.reload();
-                  if (auth.currentUser.emailVerified) {
-                    setUser({ ...user, emailVerified: true });
-                    setAuthError(null);
-                    showToast('E-mail успешно подтвержден!');
-                  } else {
-                    showToast('E-mail еще не подтвержден. Перейдите по ссылке из письма.');
-                  }
-                }
-              }}
-              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded font-bold text-[11px] transition"
-            >
-              Я подтвердил (Проверить)
-            </button>
-          </div>
-        </div>
+      {user && !user.emailVerified && false && (
+        <div />
       )}
 
       <main className="flex-grow flex flex-col md:flex-row overflow-hidden relative">

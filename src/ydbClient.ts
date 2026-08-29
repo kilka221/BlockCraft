@@ -57,6 +57,30 @@ export async function saveYdbDiagramItem(uid: string, diagram: YdbDiagramItem) {
   });
 }
 
+export async function registerYdbUserApi(email: string, pass: string, displayName?: string) {
+  const res = await safeFetchJson('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: pass, displayName }),
+  });
+  if (!res || !res.success) {
+    throw new Error(res?.error || 'Ошибка регистрации');
+  }
+  return res.user;
+}
+
+export async function loginYdbUserApi(email: string, pass: string) {
+  const res = await safeFetchJson('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: pass }),
+  });
+  if (!res || !res.success) {
+    throw new Error(res?.error || 'Ошибка входа');
+  }
+  return res.user;
+}
+
 export async function fetchYdbDiagrams(uid: string): Promise<YdbDiagramItem[]> {
   const data = await safeFetchJson(`/api/diagrams/${encodeURIComponent(uid)}`);
   if (data && data.success && Array.isArray(data.diagrams)) {
@@ -64,3 +88,12 @@ export async function fetchYdbDiagrams(uid: string): Promise<YdbDiagramItem[]> {
   }
   return [];
 }
+
+export async function deleteYdbDiagramItem(uid: string, diagramId: string) {
+  return await safeFetchJson('/api/diagrams/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uid, diagramId }),
+  });
+}
+

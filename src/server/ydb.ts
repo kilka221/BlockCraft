@@ -177,6 +177,114 @@ export async function saveYdbDiagram(userId: string, diagram: any) {
       $createdAt: TypedValues.utf8(diagram.createdAt || new Date().toISOString()),
       $updatedAt: TypedValues.utf8(new Date().toISOString()),
     });
+  });
+}
+
+export async function registerYdbUser(email: string, pass: string, displayName: string) {
+  const driver = await getYdbDriver();
+  return await driver.tableClient.withSession(async (session) => {
+    const checkQuery = `
+      DECLARE $userId AS Utf8;
+      SELECT userId, email, displayName FROM users WHERE userId = $userId;
+    `;
+    const cleanEmail = email.toLowerCase().trim();
+    const userId = `email_${Buffer.from(cleanEmail).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
+    
+    const prepCheck = await session.prepareQuery(checkQuery);
+    const checkRes = await session.executeQuery(prepCheck, {
+      $userId: TypedValues.utf8(userId)
+    });
+
+    const rows = checkRes.resultSets[0]?.rows;
+    if (rows && rows.length > 0) {
+      throw new Error('Пользователь с таким email уже зарегистрирован.');
+    }
+
+    const passwordHash = Buffer.from(pass).toString('base64');
+    const finalName = displayName.trim() || cleanEmail.split('@')[0];
+
+    const upsertQuery = `
+      DECLARE $userId AS Utf8;
+      DECLARE $email AS Utf8;
+      DECLARE $displayName AS Utf8;
+      DECLARE $tokens AS Int64;
+      DECLARE $createdAt AS Utf8;
+      DECLARE $passwordHash AS Utf8;
+
+      UPSERT INTO users (userId, email, displayName, tokens, createdAt, passwordHash)
+      VALUES ($userId, $email, $displayName, $tokens, $createdAt, $passwordHash);
+    `;
+    const prepUpsert = await session.prepareQuery(upsertQuery);
+    await session.executeQuery(prepUpsert, {
+      $userId: TypedValues.utf8(userId),
+      $email: TypedValues.utf8(cleanEmail),
+      $displayName: TypedValues.utf8(finalName),
+      $tokens: TypedValues.int64(1),
+      $createdAt: TypedValues.utf8(new Date().toISOString()),
+      $passwordHash: TypedValues.utf8(passwordHash),
+    });
+
+    console.log(`[YDB] Registered new user in YDB: ${userId} (${cleanEmail})`);
+
+    return {
+      uid: userId,
+      email: cleanEmail,
+      displayName: finalName,
+      tokens: 1
+    };
+  });
+}
+
+export async function loginYdbUser(email: string, pass: string) {
+  const driver = await getYdbDriver();
+  return await driver.tableClient.withSession(async (session) => {
+    const cleanEmail = email.toLowerCase().trim();
+    const userId = `email_${Buffer.from(cleanEmail).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
+
+    const query = `
+      DECLARE $userId AS Utf8;
+      SELECT userId, email, displayName, tokens, passwordHash FROM users WHERE userId = $userId;
+    `;
+    const prep = await session.prepareQuery(query);
+    const res = await session.executeQuery(prep, {
+      $userId: TypedValues.utf8(userId)
+    });
+
+    const rows = res.resultSets[0]?.rows;
+    if (!rows || rows.length === 0) {
+      throw new Error('Пользователь с таким email не найден. Пройдите регистрацию.');
+    }
+
+    const userObj = TypedData.createNativeObjects(res.resultSets[0])[0];
+    const expectedHash = Buffer.from(pass).toString('base64');
+    
+    if (userObj.passwordHash && String(userObj.passwordHash) !== expectedHash) {
+      throw new Error('Неверный пароль.');
+    }
+
+    return {
+      uid: String(userObj.userId),
+      email: String(userObj.email || cleanEmail),
+      displayName: String(userObj.displayName || cleanEmail.split('@')[0]),
+      tokens: Number(userObj.tokens) || 1
+    };
+  });
+}
+
+export async function deleteYdbDiagram(userId: string, diagramId: string) {
+  const driver = await getYdbDriver();
+  return await driver.tableClient.withSession(async (session) => {
+    const query = `
+      DECLARE $userId AS Utf8;
+      DECLARE $id AS Utf8;
+      DELETE FROM diagrams WHERE userId = $userId AND id = $id;
+    `;
+    const prep = await session.prepareQuery(query);
+    await session.executeQuery(prep, {
+      $userId: TypedValues.utf8(userId),
+      $id: TypedValues.utf8(diagramId),
+    });
     return { success: true };
   });
 }
+

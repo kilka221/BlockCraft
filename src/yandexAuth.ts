@@ -19,11 +19,23 @@ export async function fetchYandexProfileByToken(accessToken: string): Promise<Ya
     } else {
       const rawText = await resp.text();
       console.warn('[Yandex Auth] non-JSON response from API:', resp.status, rawText.slice(0, 100));
-      throw new Error('Сервер Яндекс авторизации недоступен. Используйте вход по логину ниже.');
+      throw new Error('Сервер Яндекс авторизации недоступен. Попробуйте повторить вход.');
     }
 
     if (!resp.ok || !json.success || !json.data) {
-      const errorMsg = json.error || json.details || 'Не удалось получить данные профиля Яндекс';
+      let errorMsg = 'Не удалось получить данные профиля Яндекс';
+      if (json.details) {
+        try {
+          const parsed = typeof json.details === 'string' ? JSON.parse(json.details) : json.details;
+          if (parsed.message) errorMsg = `Яндекс: ${parsed.message}`;
+          else if (parsed.error_description) errorMsg = `Яндекс: ${parsed.error_description}`;
+          else if (parsed.error) errorMsg = `Яндекс: ${parsed.error}`;
+        } catch {
+          errorMsg = json.details;
+        }
+      } else if (json.error) {
+        errorMsg = json.error;
+      }
       throw new Error(errorMsg);
     }
 
@@ -42,7 +54,7 @@ export async function fetchYandexProfileByToken(accessToken: string): Promise<Ya
     };
   } catch (err: any) {
     if (err.message && (err.message.includes('Unexpected token') || err.message.includes('is not valid JSON'))) {
-      throw new Error('Не удалось войти через всплывающее окно. Используйте быстрый вход по логину ниже.');
+      throw new Error('Не удалось расшифровать ответ от Яндекс. Попробуйте войти снова.');
     }
     throw err;
   }
@@ -51,7 +63,7 @@ export async function fetchYandexProfileByToken(accessToken: string): Promise<Ya
 export const YANDEX_CLIENT_ID = 'c0f4c3f30ccf47088a44f3262ed4fe32';
 
 export function getYandexClientId(): string {
-  return YANDEX_CLIENT_ID;
+  return localStorage.getItem('blockcraft_yandex_client_id')?.trim() || YANDEX_CLIENT_ID;
 }
 
 export function openYandexOAuthPopup(clientIdOverride?: string): Promise<YandexUserProfile> {

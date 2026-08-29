@@ -19,19 +19,7 @@ import {
   Code2,
   FolderOpen
 } from 'lucide-react';
-import { 
-  collection, 
-  doc, 
-  onSnapshot, 
-  setDoc, 
-  deleteDoc, 
-  updateDoc, 
-  query, 
-  orderBy, 
-  serverTimestamp 
-} from 'firebase/firestore';
-import { db } from './firebase';
-import { saveYdbDiagramItem, fetchYdbDiagrams } from './ydbClient';
+import { saveYdbDiagramItem, fetchYdbDiagrams, deleteYdbDiagramItem } from './ydbClient';
 import { AppUserProfile } from './App';
 
 export interface SavedDiagram {
@@ -72,10 +60,9 @@ export const DiagramHistory: React.FC<DiagramHistoryProps> = ({
   const [customSaveTitle, setCustomSaveTitle] = useState('');
   const [showSaveInput, setShowSaveInput] = useState(false);
 
-  // Firestore synchronization
+  // YDB Synchronization
   useEffect(() => {
     if (!user) {
-      // Local fallback if not logged in
       try {
         const saved = localStorage.getItem('blockcraft_local_history');
         if (saved) {
@@ -89,58 +76,30 @@ export const DiagramHistory: React.FC<DiagramHistoryProps> = ({
       return;
     }
 
-    try {
-      const diagColRef = collection(db, 'users', user.uid, 'diagrams');
-      const q = query(diagColRef);
-      
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const items: SavedDiagram[] = [];
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          items.push({
-            id: docSnap.id,
-            userId: data.userId || user.uid,
-            title: data.title || 'Безымянная схема',
-            code: data.code || '',
-            language: (data.language === 'cpp' ? 'cpp' : 'python') as 'python' | 'cpp',
-            createdAt: data.createdAt || new Date().toISOString(),
-            updatedAt: data.updatedAt || data.createdAt || new Date().toISOString(),
-            isPinned: !!data.isPinned,
-          });
-        });
+    fetchYdbDiagrams(user.uid).then((ydbItems) => {
+      const formatted: SavedDiagram[] = ydbItems.map((y) => ({
+        id: y.id,
+        userId: user.uid,
+        title: y.title || 'Безымянная схема',
+        code: y.code || '',
+        language: (y.language === 'cpp' ? 'cpp' : 'python') as 'python' | 'cpp',
+        createdAt: y.createdAt || new Date().toISOString(),
+        updatedAt: y.updatedAt || y.createdAt || new Date().toISOString(),
+        isPinned: !!y.isPinned,
+      }));
 
-        // Sort: pinned first, then by updatedAt/createdAt descending
-        items.sort((a, b) => {
-          if (a.isPinned && !b.isPinned) return -1;
-          if (!a.isPinned && b.isPinned) return 1;
-          const timeA = new Date(a.updatedAt || a.createdAt).getTime();
-          const timeB = new Date(b.updatedAt || b.createdAt).getTime();
-          return timeB - timeA;
-        });
-
-        setDiagrams(items);
-
-        // Also fetch from YDB
-        fetchYdbDiagrams(user.uid).then((ydbItems) => {
-          if (ydbItems && ydbItems.length > 0) {
-            setDiagrams(prev => {
-              const ids = new Set(prev.map(p => p.id));
-              const newOnes = ydbItems.filter(y => !ids.has(y.id)) as SavedDiagram[];
-              if (newOnes.length > 0) {
-                return [...prev, ...newOnes];
-              }
-              return prev;
-            });
-          }
-        }).catch(() => {});
-      }, (error) => {
-        console.warn('Diagrams snapshot error:', error);
+      formatted.sort((a, b) => {
+        if (a.isPinned && !b.isPinned) return -1;
+        if (!a.isPinned && b.isPinned) return 1;
+        const timeA = new Date(a.updatedAt || a.createdAt).getTime();
+        const timeB = new Date(b.updatedAt || b.createdAt).getTime();
+        return timeB - timeA;
       });
 
-      return () => unsubscribe();
-    } catch (err) {
-      console.warn('Error setting up diagrams listener:', err);
-    }
+      setDiagrams(formatted);
+    }).catch((err) => {
+      console.warn('YDB fetch diagrams error:', err);
+    });
   }, [user]);
 
   // Save current code as a new diagram in history
@@ -168,18 +127,14 @@ export const DiagramHistory: React.FC<DiagramHistoryProps> = ({
 
     if (user) {
       try {
-        const docRef = doc(db, 'users', user.uid, 'diagrams', id);
-        await setDoc(docRef, newDiagram);
-        onNotify(`Схема «${title}» сохранена в историю`);
+        await saveYdbDiagramItem(user.uid, newDiagram);
+        setDiagrams((prev) => [newDiagram, ...prev]);
+        onNotify(`Схема «${title}» сохранена в Yandex Cloud DB`);
       } catch (e) {
-        console.error('Error saving to Firestore:', e);
-        onNotify('Ошибка сохранения в облако');
+        console.error('Error saving to YDB:', e);
+        onNotify('Ошибка сохранения в БД');
       }
-
-      // Mirror save to Yandex Database (YDB)
-      saveYdbDiagramItem(user.uid, newDiagram).catch(() => {});
     } else {
-      // Save locally
       const updated = [newDiagram, ...diagrams];
       setDiagrams(updated);
       localStorage.setItem('blockcraft_local_history', JSON.stringify(updated));
@@ -190,20 +145,16 @@ export const DiagramHistory: React.FC<DiagramHistoryProps> = ({
     setShowSaveInput(false);
   };
 
-  // Helper to extract a smart title from code
   const generateDefaultTitle = (sourceCode: string, lang: string) => {
     const lines = sourceCode.split('\n').map(l => l.trim()).filter(Boolean);
     for (const line of lines) {
-      // Match Python def function_name
       const pyFunc = line.match(/^def\s+([a-zA-Z0-9_]+)\s*\(/);
       if (pyFunc) return `Функция ${pyFunc[1]}()`;
       
-      // Match C++ function
       const cppFunc = line.match(/^(?:int|void|double|float|bool|string|auto)\s+([a-zA-Z0-9_]+)\s*\(/);
       if (cppFunc) return `Функция ${cppFunc[1]}()`;
     }
     
-    // First non-empty comment or first line
     if (lines[0]) {
       const clean = lines[0].replace(/^[#//*\s]+/, '').slice(0, 30);
       if (clean) return clean;
@@ -213,38 +164,36 @@ export const DiagramHistory: React.FC<DiagramHistoryProps> = ({
     return `Схема ${lang === 'cpp' ? 'C++' : 'Python'} (${dateStr})`;
   };
 
-  // Toggle Pin
   const handleTogglePin = async (diagram: SavedDiagram, e: React.MouseEvent) => {
     e.stopPropagation();
     const newPinned = !diagram.isPinned;
+    const updatedDiag = { ...diagram, isPinned: newPinned, updatedAt: new Date().toISOString() };
 
     if (user) {
       try {
-        const docRef = doc(db, 'users', user.uid, 'diagrams', diagram.id);
-        await updateDoc(docRef, {
-          isPinned: newPinned,
-          updatedAt: new Date().toISOString()
-        });
+        await saveYdbDiagramItem(user.uid, updatedDiag);
+        setDiagrams((prev) => 
+          prev.map((d) => (d.id === diagram.id ? updatedDiag : d))
+            .sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0))
+        );
         onNotify(newPinned ? 'Схема закреплена вверху' : 'Схема откреплена');
       } catch (err) {
         console.error('Error toggling pin:', err);
       }
     } else {
-      const updated = diagrams.map(d => d.id === diagram.id ? { ...d, isPinned: newPinned } : d);
+      const updated = diagrams.map(d => d.id === diagram.id ? updatedDiag : d);
       updated.sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0));
       setDiagrams(updated);
       localStorage.setItem('blockcraft_local_history', JSON.stringify(updated));
     }
   };
 
-  // Start Rename
   const handleStartRename = (diagram: SavedDiagram, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingId(diagram.id);
     setEditTitleText(diagram.title);
   };
 
-  // Save Rename
   const handleSaveRename = async (diagram: SavedDiagram, e?: React.MouseEvent | React.FormEvent) => {
     if (e) e.stopPropagation();
     const newTitle = editTitleText.trim();
@@ -253,33 +202,31 @@ export const DiagramHistory: React.FC<DiagramHistoryProps> = ({
       return;
     }
 
+    const updatedDiag = { ...diagram, title: newTitle, updatedAt: new Date().toISOString() };
+
     if (user) {
       try {
-        const docRef = doc(db, 'users', user.uid, 'diagrams', diagram.id);
-        await updateDoc(docRef, {
-          title: newTitle,
-          updatedAt: new Date().toISOString()
-        });
+        await saveYdbDiagramItem(user.uid, updatedDiag);
+        setDiagrams((prev) => prev.map((d) => (d.id === diagram.id ? updatedDiag : d)));
         onNotify(`Схема переименована в «${newTitle}»`);
       } catch (err) {
         console.error('Error renaming diagram:', err);
       }
     } else {
-      const updated = diagrams.map(d => d.id === diagram.id ? { ...d, title: newTitle, updatedAt: new Date().toISOString() } : d);
+      const updated = diagrams.map(d => d.id === diagram.id ? updatedDiag : d);
       setDiagrams(updated);
       localStorage.setItem('blockcraft_local_history', JSON.stringify(updated));
     }
     setEditingId(null);
   };
 
-  // Delete diagram
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (user) {
       try {
-        const docRef = doc(db, 'users', user.uid, 'diagrams', id);
-        await deleteDoc(docRef);
-        onNotify('Схема удалена из истории');
+        await deleteYdbDiagramItem(user.uid, id);
+        setDiagrams((prev) => prev.filter((d) => d.id !== id));
+        onNotify('Схема удалена из истории YDB');
       } catch (err) {
         console.error('Error deleting diagram:', err);
       }
