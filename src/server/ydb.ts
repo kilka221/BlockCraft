@@ -290,52 +290,45 @@ export async function getYdbUser(userId: string, email?: string) {
 export async function upsertYdbUser(userId: string, email: string, displayName: string, hintTokens?: number) {
   const driver = await getYdbDriver();
   return await driver.tableClient.withSession(async (session: any) => {
-    let tokensToKeep = typeof hintTokens === 'number' && !isNaN(hintTokens) && hintTokens >= 0 ? hintTokens : 1;
+    let tokensToKeep = typeof hintTokens === 'number' && !isNaN(hintTokens) && hintTokens > 0 ? hintTokens : 1;
     const cleanEmail = (email || '').toLowerCase().trim();
-    let userExists = false;
 
     // 1. Check existing tokens by userId
     const checkUserQuery = `
       DECLARE $userId AS Utf8;
-      SELECT userId, tokens, email FROM users WHERE userId = $userId;
+      SELECT tokens FROM users WHERE userId = $userId;
     `;
-    const prepCheckUser = await session.prepareQuery(checkUserQuery);
-    const checkUserRes = await session.executeQuery(prepCheckUser, {
+    const prepCheck = await session.prepareQuery(checkUserQuery);
+    const checkUserRes = await session.executeQuery(prepCheck, {
       $userId: TypedValues.utf8(userId),
     });
     const userRows = checkUserRes.resultSets[0]?.rows;
     if (userRows && userRows.length > 0) {
-      userExists = true;
       const existing = TypedData.createNativeObjects(checkUserRes.resultSets[0])[0];
-      tokensToKeep = toJsNumber(existing?.tokens, 0);
-    } else if (cleanEmail) {
-      // 2. Check existing tokens by email across all accounts
+      const t = toJsNumber(existing?.tokens, 1);
+      if (t > tokensToKeep) tokensToKeep = t;
+    }
+
+    // 2. Check existing tokens by email across all accounts
+    if (cleanEmail) {
       const checkEmailQuery = `
         DECLARE $email AS Utf8;
         SELECT userId, tokens, email FROM users WHERE email = $email;
       `;
-      const prepCheckEmail = await session.prepareQuery(checkEmailQuery);
-      const checkEmailRes = await session.executeQuery(prepCheckEmail, {
+      const prepEmail = await session.prepareQuery(checkEmailQuery);
+      const checkEmailRes = await session.executeQuery(prepEmail, {
         $email: TypedValues.utf8(cleanEmail),
       });
       const emailRows = checkEmailRes.resultSets[0]?.rows;
       if (emailRows && emailRows.length > 0) {
-        userExists = true;
         const nativeEmailRows = TypedData.createNativeObjects(checkEmailRes.resultSets[0]);
-        let maxTokens = 0;
         for (const row of nativeEmailRows) {
-          const t = toJsNumber(row?.tokens, 0);
-          if (t > maxTokens) {
-            maxTokens = t;
+          const t = toJsNumber(row?.tokens, 1);
+          if (t > tokensToKeep) {
+            tokensToKeep = t;
           }
         }
-        tokensToKeep = maxTokens;
       }
-    }
-
-    if (!userExists) {
-      // User is totally new, default to 1 token or hintTokens if hintTokens is supplied
-      tokensToKeep = typeof hintTokens === 'number' && !isNaN(hintTokens) && hintTokens >= 0 ? hintTokens : 1;
     }
 
     // 3. Upsert into users for current userId
@@ -345,10 +338,9 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
       DECLARE $displayName AS Utf8;
       DECLARE $tokens AS Int64;
       DECLARE $createdAt AS Utf8;
-      DECLARE $emailVerified AS Bool;
 
-      UPSERT INTO users (userId, email, displayName, tokens, createdAt, emailVerified)
-      VALUES ($userId, $email, $displayName, $tokens, $createdAt, $emailVerified);
+      UPSERT INTO users (userId, email, displayName, tokens, createdAt)
+      VALUES ($userId, $email, $displayName, $tokens, $createdAt);
     `;
     const prepUpsert = await session.prepareQuery(upsertQuery);
     await session.executeQuery(prepUpsert, {
@@ -357,7 +349,6 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
       $displayName: TypedValues.utf8(displayName || 'Пользователь'),
       $tokens: TypedValues.int64(tokensToKeep),
       $createdAt: TypedValues.utf8(new Date().toISOString()),
-      $emailVerified: TypedValues.bool(true),
     });
 
     return { tokens: tokensToKeep };
@@ -386,7 +377,7 @@ export async function decrementYdbToken(userId: string): Promise<number> {
   });
 }
 
-export async function registerYdbUser(email: string, pass: string, displayName: string, verificationCode?: string) {
+export async function registerYdbUser(email: string, pass: string, displayName: string) {
   const driver = await getYdbDriver();
   return await driver.tableClient.withSession(async (session: any) => {
     const cleanEmail = email.toLowerCase().trim();
@@ -394,7 +385,7 @@ export async function registerYdbUser(email: string, pass: string, displayName: 
 
     const checkQuery = `
       DECLARE $userId AS Utf8;
-      SELECT userId, email, emailVerified FROM users WHERE userId = $userId;
+      SELECT userId, email FROM users WHERE userId = $userId;
     `;
     const prepCheck = await session.prepareQuery(checkQuery);
     const checkRes = await session.executeQuery(prepCheck, {
@@ -403,12 +394,7 @@ export async function registerYdbUser(email: string, pass: string, displayName: 
 
     const rows = checkRes.resultSets[0]?.rows;
     if (rows && rows.length > 0) {
-      const existing = TypedData.createNativeObjects(checkRes.resultSets[0])[0];
-      // If the email is already verified, throw an error
-      if (existing?.emailVerified === true) {
-        throw new Error('Пользователь с таким email уже зарегистрирован. Войдите.');
-      }
-      // If they are unverified, we will overwrite/update their details below
+      throw new Error('Пользователь с таким email уже зарегистрирован. Войдите.');
     }
 
     const passwordHash = hashPassword(pass);
@@ -422,125 +408,29 @@ export async function registerYdbUser(email: string, pass: string, displayName: 
       DECLARE $createdAt AS Utf8;
       DECLARE $passwordHash AS Utf8;
       DECLARE $authType AS Utf8;
-      DECLARE $emailVerified AS Bool;
-      DECLARE $verificationCode AS Utf8;
 
-      UPSERT INTO users (userId, email, displayName, tokens, createdAt, passwordHash, authType, emailVerified, verificationCode)
-      VALUES ($userId, $email, $displayName, $tokens, $createdAt, $passwordHash, $authType, $emailVerified, $verificationCode);
+      UPSERT INTO users (userId, email, displayName, tokens, createdAt, passwordHash, authType)
+      VALUES ($userId, $email, $displayName, $tokens, $createdAt, $passwordHash, $authType);
     `;
     const prepUpsert = await session.prepareQuery(upsertQuery);
     await session.executeQuery(prepUpsert, {
       $userId: TypedValues.utf8(userId),
       $email: TypedValues.utf8(cleanEmail),
       $displayName: TypedValues.utf8(finalName),
-      $tokens: TypedValues.int64(0), // starts at 0 tokens until verified
+      $tokens: TypedValues.int64(1),
       $createdAt: TypedValues.utf8(new Date().toISOString()),
       $passwordHash: TypedValues.utf8(passwordHash),
       $authType: TypedValues.utf8('local'),
-      $emailVerified: TypedValues.bool(false),
-      $verificationCode: TypedValues.utf8(verificationCode || ''),
     });
 
-    console.log(`[YDB] Registered/Updated unverified user in YDB: ${userId} (${cleanEmail}), code: ${verificationCode}`);
+    console.log(`[YDB] Registered new user in YDB: ${userId} (${cleanEmail})`);
 
     return {
       uid: userId,
       email: cleanEmail,
       displayName: finalName,
-      tokens: 0,
-      emailVerified: false,
-    };
-  });
-}
-
-export async function verifyYdbUserCode(email: string, code: string) {
-  const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session: any) => {
-    const cleanEmail = email.toLowerCase().trim();
-    const userId = `email_${Buffer.from(cleanEmail).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
-
-    const query = `
-      DECLARE $userId AS Utf8;
-      SELECT userId, email, displayName, tokens, verificationCode, emailVerified FROM users WHERE userId = $userId;
-    `;
-    const prep = await session.prepareQuery(query);
-    const res = await session.executeQuery(prep, {
-      $userId: TypedValues.utf8(userId),
-    });
-
-    const rows = res.resultSets[0]?.rows;
-    if (!rows || rows.length === 0) {
-      throw new Error('Пользователь не найден. Пожалуйста, пройдите регистрацию.');
-    }
-
-    const userObj = TypedData.createNativeObjects(res.resultSets[0])[0];
-    
-    if (userObj.emailVerified === true) {
-      return {
-        uid: String(userObj.userId),
-        email: String(userObj.email || cleanEmail),
-        displayName: String(userObj.displayName || cleanEmail.split('@')[0]),
-        tokens: toJsNumber(userObj.tokens, 1),
-      };
-    }
-
-    if (!userObj.verificationCode || String(userObj.verificationCode).trim() !== String(code).trim()) {
-      throw new Error('Неверный код подтверждения. Пожалуйста, проверьте код.');
-    }
-
-    // Success: mark emailVerified = true, and award 1 welcome token!
-    const updateQuery = `
-      DECLARE $userId AS Utf8;
-      DECLARE $emailVerified AS Bool;
-      DECLARE $tokens AS Int64;
-      UPDATE users SET emailVerified = $emailVerified, tokens = $tokens WHERE userId = $userId;
-    `;
-    const prepUpdate = await session.prepareQuery(updateQuery);
-    await session.executeQuery(prepUpdate, {
-      $userId: TypedValues.utf8(userId),
-      $emailVerified: TypedValues.bool(true),
-      $tokens: TypedValues.int64(1), // give 1 token upon successful confirmation
-    });
-
-    return {
-      uid: userId,
-      email: cleanEmail,
-      displayName: String(userObj.displayName || cleanEmail.split('@')[0]),
       tokens: 1,
     };
-  });
-}
-
-export async function setYdbUserVerificationCode(email: string, code: string) {
-  const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session: any) => {
-    const cleanEmail = email.toLowerCase().trim();
-    const userId = `email_${Buffer.from(cleanEmail).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
-
-    const query = `
-      DECLARE $userId AS Utf8;
-      SELECT userId FROM users WHERE userId = $userId;
-    `;
-    const prep = await session.prepareQuery(query);
-    const res = await session.executeQuery(prep, {
-      $userId: TypedValues.utf8(userId),
-    });
-
-    const rows = res.resultSets[0]?.rows;
-    if (!rows || rows.length === 0) {
-      throw new Error('Пользователь не найден. Зарегистрируйтесь.');
-    }
-
-    const updateQuery = `
-      DECLARE $userId AS Utf8;
-      DECLARE $verificationCode AS Utf8;
-      UPDATE users SET verificationCode = $verificationCode WHERE userId = $userId;
-    `;
-    const prepUpdate = await session.prepareQuery(updateQuery);
-    await session.executeQuery(prepUpdate, {
-      $userId: TypedValues.utf8(userId),
-      $verificationCode: TypedValues.utf8(code),
-    });
   });
 }
 
@@ -552,7 +442,7 @@ export async function loginYdbUser(email: string, pass: string) {
 
     const query = `
       DECLARE $userId AS Utf8;
-      SELECT userId, email, displayName, tokens, passwordHash, emailVerified FROM users WHERE userId = $userId;
+      SELECT userId, email, displayName, tokens, passwordHash FROM users WHERE userId = $userId;
     `;
     const prep = await session.prepareQuery(query);
     const res = await session.executeQuery(prep, {
@@ -565,14 +455,6 @@ export async function loginYdbUser(email: string, pass: string) {
     }
 
     const userObj = TypedData.createNativeObjects(res.resultSets[0])[0];
-    
-    // Check verification status
-    if (userObj.emailVerified === false) {
-      const err = new Error('Email не подтвержден. Пожалуйста, подтвердите его.');
-      (err as any).needsVerification = true;
-      (err as any).email = cleanEmail;
-      throw err;
-    }
 
     const inputHash = hashPassword(pass);
     const legacyHash = Buffer.from(pass).toString('base64');

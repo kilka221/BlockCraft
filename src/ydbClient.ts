@@ -75,7 +75,7 @@ export async function registerYdbUserApi(email: string, pass: string, displayNam
   if (!res || !res.success) {
     throw new Error(res?.error || 'Ошибка регистрации');
   }
-  return res;
+  return res.user;
 }
 
 export async function loginYdbUserApi(email: string, pass: string) {
@@ -85,38 +85,9 @@ export async function loginYdbUserApi(email: string, pass: string) {
     body: JSON.stringify({ email, password: pass }),
   });
   if (!res || !res.success) {
-    const err = new Error(res?.error || 'Ошибка входа');
-    if (res?.needsVerification) {
-      (err as any).needsVerification = true;
-      (err as any).email = res.email;
-    }
-    throw err;
+    throw new Error(res?.error || 'Ошибка входа');
   }
   return res.user;
-}
-
-export async function verifyYdbUserCodeApi(email: string, code: string) {
-  const res = await safeFetchJson('/api/auth/verify-code', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, code }),
-  });
-  if (!res || !res.success) {
-    throw new Error(res?.error || 'Неверный код подтверждения');
-  }
-  return res.user;
-}
-
-export async function resendVerificationCodeApi(email: string) {
-  const res = await safeFetchJson('/api/auth/resend-code', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email }),
-  });
-  if (!res || !res.success) {
-    throw new Error(res?.error || 'Не удалось отправить код');
-  }
-  return res.codeForTesting;
 }
 
 export async function fetchYdbDiagrams(uid: string): Promise<YdbDiagramItem[]> {
@@ -134,4 +105,3 @@ export async function deleteYdbDiagramItem(uid: string, diagramId: string) {
     body: JSON.stringify({ uid, diagramId }),
   });
 }
-
