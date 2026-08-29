@@ -67,9 +67,22 @@ export async function fetchYandexProfileByToken(accessToken: string): Promise<Ya
 }
 
 export const YANDEX_CLIENT_ID = 'c0f4c3f30ccf47088a44f3262ed4fe32';
+export const DEFAULT_PRODUCTION_URL = 'https://schemator.ru';
+
+export function getAppBaseUrl(): string {
+  if (typeof window !== 'undefined' && window.location && window.location.origin) {
+    return window.location.origin;
+  }
+  return DEFAULT_PRODUCTION_URL;
+}
 
 export function getYandexClientId(): string {
   return localStorage.getItem('blockcraft_yandex_client_id')?.trim() || YANDEX_CLIENT_ID;
+}
+
+export function isMobileDevice(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768;
 }
 
 export function openYandexOAuthPopup(clientIdOverride?: string): Promise<YandexUserProfile> {
@@ -81,8 +94,14 @@ export function openYandexOAuthPopup(clientIdOverride?: string): Promise<YandexU
       return;
     }
 
-    const redirectUri = window.location.origin;
+    const redirectUri = getAppBaseUrl();
     const authUrl = `https://oauth.yandex.ru/authorize?response_type=token&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+
+    // If mobile, redirect directly to avoid popup-blocking and cross-window sleep bugs
+    if (isMobileDevice()) {
+      window.location.href = authUrl;
+      return;
+    }
 
     const width = 520;
     const height = 650;
@@ -96,7 +115,8 @@ export function openYandexOAuthPopup(clientIdOverride?: string): Promise<YandexU
     );
 
     if (!popup) {
-      reject(new Error('Окно входа было заблокировано браузером. Пожалуйста, разрешите всплывающие окна для этого сайта.'));
+      // If popup blocked, fallback to redirect
+      window.location.href = authUrl;
       return;
     }
 
@@ -171,7 +191,7 @@ export function redirectToYandexOAuth(clientIdOverride?: string) {
   if (!clientId) {
     throw new Error('NO_CLIENT_ID');
   }
-  const redirectUri = window.location.origin;
+  const redirectUri = getAppBaseUrl();
   const authUrl = `https://oauth.yandex.ru/authorize?response_type=token&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
   window.location.href = authUrl;
 }

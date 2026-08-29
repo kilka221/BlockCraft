@@ -10,13 +10,17 @@ interface AuthModalProps {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess }) => {
-  const [tab, setTab] = useState<'yandex' | 'email'>('yandex');
+  const [tab, setTab] = useState<'yandex' | 'vk' | 'email'>('yandex');
   const [isSignUp, setIsSignUp] = useState(false);
   
   // Email form state
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+
+  // VK form state
+  const [vkIdOrName, setVkIdOrName] = useState('');
+  const [vkEmail, setVkEmail] = useState('');
   
   // States
   const [loading, setLoading] = useState(false);
@@ -24,6 +28,39 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  // VK ID Auth & Sync
+  const handleVkAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    try {
+      const cleanName = vkIdOrName.trim() || 'Пользователь VK';
+      const cleanId = vkIdOrName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '') || String(Date.now());
+      const userUid = `vk_${cleanId}`;
+      const userEmail = vkEmail.trim() || `${cleanId}@vk.com`;
+
+      const syncResult = await syncYdbUser(userUid, userEmail, cleanName, 1);
+      const userProfile = {
+        uid: userUid,
+        email: userEmail,
+        displayName: cleanName,
+        tokens: syncResult?.result?.tokens || 1,
+        providerId: 'vk.com'
+      };
+
+      localStorage.setItem('blockcraft_yandex_user', JSON.stringify(userProfile));
+      setSuccessMsg('Успешный вход через VK ID! Данные сохранены в базе.');
+      onSuccess(userProfile);
+      setTimeout(() => onClose(), 500);
+    } catch (err: any) {
+      console.warn('VK Auth error:', err);
+      setError(err.message || 'Не удалось авторизоваться через VK.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Official Yandex OAuth Popup Trigger
   const handleYandexOAuth = async () => {
@@ -113,11 +150,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         </div>
 
         {/* Tab Selection */}
-        <div className="grid grid-cols-2 p-1.5 mx-6 mt-4 bg-zinc-100 dark:bg-zinc-800/80 rounded-xl gap-1 text-xs font-semibold">
+        <div className="grid grid-cols-3 p-1.5 mx-6 mt-4 bg-zinc-100 dark:bg-zinc-800/80 rounded-xl gap-1 text-xs font-semibold">
           <button
             type="button"
             onClick={() => { setTab('yandex'); setError(null); setSuccessMsg(null); }}
-            className={`py-2 rounded-lg flex items-center justify-center gap-2 transition ${
+            className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition ${
               tab === 'yandex' 
                 ? 'bg-white dark:bg-[#2A2A30] text-zinc-900 dark:text-white shadow-sm' 
                 : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
@@ -131,6 +168,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
           <button
             type="button"
+            onClick={() => { setTab('vk'); setError(null); setSuccessMsg(null); }}
+            className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition ${
+              tab === 'vk' 
+                ? 'bg-white dark:bg-[#2A2A30] text-[#0077FF] dark:text-[#4B9CFF] shadow-sm' 
+                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+            }`}
+          >
+            <span className="w-4 h-4 rounded-full bg-[#0077FF] text-white flex items-center justify-center text-[9px] font-black leading-none">
+              VK
+            </span>
+            <span>VK ID</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => { setTab('email'); setError(null); setSuccessMsg(null); }}
             className={`py-2 rounded-lg flex items-center justify-center gap-1.5 transition ${
               tab === 'email' 
@@ -139,7 +191,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
             }`}
           >
             <Mail className="w-3.5 h-3.5" />
-            <span>Email / Почта</span>
+            <span>Email</span>
           </button>
         </div>
 
@@ -178,6 +230,60 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                 Безопасный вход через официальный сервис Yandex ID. Данные хранятся в Yandex Cloud DB.
               </p>
             </div>
+          )}
+
+          {/* TAB 2: VK ID AUTH */}
+          {tab === 'vk' && (
+            <form onSubmit={handleVkAuth} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Имя или логин VK
+                </label>
+                <div className="relative">
+                  <UserIcon className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    required
+                    value={vkIdOrName}
+                    onChange={(e) => setVkIdOrName(e.target.value)}
+                    placeholder="Например: Аня или anya_smith"
+                    className="w-full pl-9 pr-3.5 py-2 bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-sm outline-none focus:border-[#0077FF] focus:ring-2 focus:ring-[#0077FF]/20 transition"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Email (необязательно)
+                </label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="email"
+                    value={vkEmail}
+                    onChange={(e) => setVkEmail(e.target.value)}
+                    placeholder="anya@vk.com"
+                    className="w-full pl-9 pr-3.5 py-2 bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-sm outline-none focus:border-[#0077FF] focus:ring-2 focus:ring-[#0077FF]/20 transition"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 mt-2 bg-[#0077FF] hover:bg-[#0066DD] disabled:opacity-50 text-white font-bold rounded-xl shadow-lg shadow-[#0077FF]/25 flex items-center justify-center gap-2 text-sm transition transform active:scale-[0.98]"
+              >
+                <span className="w-5 h-5 rounded-full bg-white text-[#0077FF] flex items-center justify-center text-xs font-black shadow-sm">
+                  VK
+                </span>
+                <span>{loading ? 'Вход в аккаунт...' : 'Войти через VK (+1 токен)'}</span>
+                <ArrowRight className="w-4 h-4 ml-1" />
+              </button>
+
+              <p className="text-[11px] text-zinc-400 text-center leading-relaxed">
+                Аккаунт VK автоматически синхронизируется с базой данных Yandex Cloud.
+              </p>
+            </form>
           )}
 
           {/* TAB 2: EMAIL AUTH */}

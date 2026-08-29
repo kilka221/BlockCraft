@@ -12,6 +12,7 @@ import { fetchYandexProfileByToken } from './yandexAuth';
 import { Coins, LogIn, LogOut, Sparkles, AlertCircle } from 'lucide-react';
 import { AuthModal } from './AuthModal';
 import { DiagramHistory } from './DiagramHistory';
+import { LegalModal, LegalDocType } from './LegalModal';
 
 export interface AppUserProfile {
   uid: string;
@@ -45,6 +46,7 @@ export default function App() {
   });
   const [lastGeneratedLanguage, setLastGeneratedLanguage] = useState("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [legalModalDoc, setLegalModalDoc] = useState<LegalDocType | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -55,35 +57,44 @@ export default function App() {
   
   React.useEffect(() => {
     // Check for Yandex OAuth response token in URL hash
-    if (window.location.hash.includes('access_token')) {
+    if (window.location.hash && window.location.hash.includes('access_token')) {
       const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
       const accessToken = hashParams.get('access_token');
       if (accessToken) {
+        // If opened as popup, notify opener
         if (window.opener) {
           try {
             window.opener.postMessage({ type: 'YANDEX_OAUTH_TOKEN', token: accessToken }, '*');
           } catch (e) {
-            console.error('OAuth postMessage error:', e);
+            console.warn('OAuth postMessage error:', e);
           }
-          setTimeout(() => {
-            try { window.close(); } catch {}
-          }, 600);
-          return;
-        } else {
-          fetchYandexProfileByToken(accessToken).then((yUser) => {
-            setUser(yUser);
-            setAuthError(null);
-            localStorage.setItem('blockcraft_yandex_user', JSON.stringify(yUser));
-            syncYdbUser(yUser.uid, yUser.email, yUser.displayName).then(() => {
-              getYdbUserTokens(yUser.uid).then((tok) => {
+        }
+
+        // ALWAYS authenticate and sync user in current window/tab as well!
+        fetchYandexProfileByToken(accessToken).then((yUser) => {
+          setUser(yUser);
+          setAuthError(null);
+          localStorage.setItem('blockcraft_yandex_user', JSON.stringify(yUser));
+          syncYdbUser(yUser.uid, yUser.email, yUser.displayName).then((syncRes) => {
+            if (syncRes?.result?.tokens) {
+              setUserTokens(syncRes.result.tokens);
+            } else {
+              getYdbUserTokens(yUser.uid, yUser.email).then((tok) => {
                 if (tok !== undefined) setUserTokens(tok);
               });
-            });
-            window.history.replaceState({}, document.title, window.location.pathname);
-          }).catch((err) => {
-            console.warn('OAuth token parse error:', err);
+            }
           });
-        }
+          window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+
+          // If opener exists and is desktop popup, try closing after short delay
+          if (window.opener && !/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+            setTimeout(() => {
+              try { window.close(); } catch {}
+            }, 600);
+          }
+        }).catch((err) => {
+          console.warn('OAuth token parse error:', err);
+        });
       }
     }
 
@@ -1472,9 +1483,29 @@ const downloadDrawio = (title: string, fontFamily: string) => {
       </main>
 
       {!viewMode && (
-        <footer className="h-7 border-t border-zinc-200 dark:border-zinc-800/80 bg-white dark:bg-[#232328] flex items-center px-6 text-[11px] text-zinc-400 dark:text-zinc-500 font-medium shrink-0 justify-between relative z-30 transition-colors duration-300 select-none">
-          <div>
-            <span>ГОСТ 19.701-90</span>
+        <footer className="h-8 border-t border-zinc-200 dark:border-zinc-800/80 bg-white dark:bg-[#232328] flex items-center px-6 text-[11px] text-zinc-400 dark:text-zinc-500 font-medium shrink-0 justify-between relative z-30 transition-colors duration-300 select-none">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-zinc-600 dark:text-zinc-400">ГОСТ 19.701-90</span>
+            <span className="text-zinc-300 dark:text-zinc-700 hidden sm:inline">•</span>
+            <span className="hidden sm:inline text-zinc-400 dark:text-zinc-500">Схематор • schemator.ru</span>
+          </div>
+
+          <div className="flex items-center gap-3 sm:gap-4">
+            <button
+              type="button"
+              onClick={() => setLegalModalDoc('privacy')}
+              className="text-zinc-500 dark:text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer underline-offset-2 hover:underline"
+            >
+              Политика конфиденциальности (152-ФЗ)
+            </button>
+            <span className="text-zinc-300 dark:text-zinc-700">•</span>
+            <button
+              type="button"
+              onClick={() => setLegalModalDoc('offer')}
+              className="text-zinc-500 dark:text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer underline-offset-2 hover:underline"
+            >
+              Публичная оферта и токены
+            </button>
           </div>
         </footer>
       )}
@@ -1501,6 +1532,13 @@ const downloadDrawio = (title: string, fontFamily: string) => {
         isOpen={isAuthModalOpen} 
         onClose={() => setIsAuthModalOpen(false)} 
         onSuccess={handleAuthSuccess} 
+      />
+
+      {/* Legal Documents Modal */}
+      <LegalModal
+        isOpen={legalModalDoc !== null}
+        initialDoc={legalModalDoc || 'privacy'}
+        onClose={() => setLegalModalDoc(null)}
       />
     </div>
     </div>
