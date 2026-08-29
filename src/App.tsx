@@ -123,6 +123,9 @@ export default function App() {
     }
 
     const unsubscribeAuth = auth.onAuthStateChanged(async (u) => {
+      if (localStorage.getItem('blockcraft_yandex_user')) {
+        return;
+      }
       if (u) {
         const appUser: AppUserProfile = {
           uid: u.uid,

@@ -18,6 +18,7 @@ async function startServer() {
 
   // Yandex OAuth Userinfo Proxy
   app.get('/api/yandex/userinfo', async (req, res) => {
+    console.log('[API] /api/yandex/userinfo request received:', req.query);
     try {
       const token = req.query.token as string;
       if (!token) {
@@ -32,14 +33,16 @@ async function startServer() {
 
       if (!response.ok) {
         const errText = await response.text();
-        return res.status(response.status).json({ error: 'Failed to fetch Yandex profile', details: errText });
+        console.warn('[API] Yandex info error response:', response.status, errText);
+        return res.status(response.status).json({ success: false, error: 'Failed to fetch Yandex profile', details: errText });
       }
 
       const data = await response.json();
-      res.json({ success: true, data });
+      console.log('[API] Yandex info success for:', data.login || data.id);
+      return res.json({ success: true, data });
     } catch (e: any) {
-      console.error('Yandex userinfo error:', e);
-      res.status(500).json({ error: e.message });
+      console.error('[API] Yandex userinfo exception:', e);
+      return res.status(500).json({ success: false, error: e.message || 'Server error' });
     }
   });
 

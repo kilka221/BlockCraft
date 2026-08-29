@@ -10,10 +10,16 @@ export interface YandexUserProfile {
 
 export async function fetchYandexProfileByToken(accessToken: string): Promise<YandexUserProfile> {
   const resp = await fetch(`/api/yandex/userinfo?token=${encodeURIComponent(accessToken)}`);
-  const json = await resp.json();
+  let json: any;
+  try {
+    json = await resp.json();
+  } catch (e) {
+    throw new Error('Ошибка связи с сервером Яндекс авторизации. Пожалуйста, попробуйте еще раз.');
+  }
 
   if (!resp.ok || !json.success || !json.data) {
-    throw new Error(json.error || 'Не удалось получить данные профиля Яндекс');
+    const errorMsg = json.error || 'Не удалось получить данные профиля Яндекс';
+    throw new Error(errorMsg);
   }
 
   const data = json.data;
