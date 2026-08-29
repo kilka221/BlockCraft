@@ -9,7 +9,9 @@ import {
   saveYdbDiagram,
   registerYdbUser,
   loginYdbUser,
-  deleteYdbDiagram
+  deleteYdbDiagram,
+  verifyYdbUserCode,
+  setYdbUserVerificationCode
 } from './src/server/ydb.js';
 
 process.on('unhandledRejection', (reason) => {
@@ -43,11 +45,51 @@ apiRouter.post('/auth/register', async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ success: false, error: 'Email и пароль обязательны' });
     }
-    const user = await registerYdbUser(email, password, displayName || name || '');
-    res.json({ success: true, user });
+    // Generate a 6-digit code
+    const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
+    await registerYdbUser(email, password, displayName || name || '', verificationCode);
+    
+    console.log(`[EMAIL VERIFICATION] Generated verification code for ${email}: ${verificationCode}`);
+    
+    res.json({ 
+      success: true, 
+      needsVerification: true, 
+      email: email.toLowerCase().trim(),
+      codeForTesting: verificationCode // Dev helper: allows easy verification without real mailer!
+    });
   } catch (e: any) {
     console.error('YDB Auth Register error:', e);
     res.status(400).json({ success: false, error: e.message || 'Ошибка регистрации' });
+  }
+});
+
+apiRouter.post('/auth/verify-code', async (req, res) => {
+  try {
+    const { email, code } = req.body;
+    if (!email || !code) {
+      return res.status(400).json({ success: false, error: 'Email и код обязательны' });
+    }
+    const user = await verifyYdbUserCode(email, code);
+    res.json({ success: true, user });
+  } catch (e: any) {
+    console.error('YDB verify-code error:', e);
+    res.status(400).json({ success: false, error: e.message || 'Неверный код подтверждения' });
+  }
+});
+
+apiRouter.post('/auth/resend-code', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ success: false, error: 'Email обязателен' });
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    await setYdbUserVerificationCode(email, code);
+    console.log(`[EMAIL VERIFICATION RESEND] Generated new code for ${email}: ${code}`);
+    res.json({ success: true, codeForTesting: code });
+  } catch (e: any) {
+    console.error('YDB resend-code error:', e);
+    res.status(400).json({ success: false, error: e.message || 'Не удалось отправить код' });
   }
 });
 
@@ -61,7 +103,12 @@ apiRouter.post('/auth/login', async (req, res) => {
     res.json({ success: true, user });
   } catch (e: any) {
     console.error('YDB Auth Login error:', e);
-    res.status(400).json({ success: false, error: e.message || 'Ошибка входа' });
+    res.status(400).json({ 
+      success: false, 
+      error: e.message || 'Ошибка входа',
+      needsVerification: e.needsVerification || false,
+      email: e.email
+    });
   }
 });
 
