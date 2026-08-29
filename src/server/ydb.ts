@@ -1,70 +1,164 @@
 import ydbSdk from 'ydb-sdk';
 import type { Driver } from 'ydb-sdk';
+import crypto from 'crypto';
 
-const { Driver: DriverClass, IamAuthService, TypedData, TypedValues } = ydbSdk;
+const { Driver: DriverClass, IamAuthService, TypedData, TypedValues, TableDescription, Column, Types } = ydbSdk as any;
 
-const DATABASE = process.env.YDB_DATABASE || '/ru-central1/b1guc5cn5a6d63lgsuiq/etnjqd1tqkrk2upndh4i';
-const ENDPOINT = process.env.YDB_ENDPOINT || 'grpcs://ydb.serverless.yandexcloud.net:2135';
+const RAW_DATABASE = process.env.YDB_DATABASE || '/ru-central1/b1guc5cn5a6d63lgsuiq/etnjqd1tqkrk2upndh4i';
+const RAW_ENDPOINT = process.env.YDB_ENDPOINT || 'grpcs://ydb.serverless.yandexcloud.net:2135';
 
-// Service Account SA Key configuration
-function getSaKey() {
-  if (process.env.YDB_SA_KEY) {
+export const DATABASE = RAW_DATABASE.trim();
+export const ENDPOINT = RAW_ENDPOINT.trim();
+
+let driver: Driver | null = null;
+let tablesInitialized = false;
+
+export function parseServiceAccountKey() {
+  const rawKey = process.env.YDB_SA_KEY;
+  if (rawKey && rawKey.trim()) {
     try {
-      const parsed = typeof process.env.YDB_SA_KEY === 'string'
-        ? JSON.parse(process.env.YDB_SA_KEY)
-        : process.env.YDB_SA_KEY;
-      if (parsed.privateKey && typeof parsed.privateKey === 'string') {
-        parsed.privateKey = Buffer.from(parsed.privateKey);
+      const trimmed = rawKey.trim();
+      const jsonStr = trimmed.startsWith('{')
+        ? trimmed
+        : Buffer.from(trimmed, 'base64').toString('utf-8');
+      const parsed = JSON.parse(jsonStr);
+
+      // Extract private key string and normalize \n
+      let privKeyStr = parsed.private_key || parsed.privateKey || '';
+      if (typeof privKeyStr === 'string') {
+        privKeyStr = privKeyStr.replace(/\\n/g, '\n');
+        const pemMatch = privKeyStr.match(/-----BEGIN PRIVATE KEY-----[\s\S]+?-----END PRIVATE KEY-----/);
+        if (pemMatch) {
+          privKeyStr = pemMatch[0];
+        }
       }
-      return parsed;
-    } catch (err) {
-      console.warn('Failed to parse process.env.YDB_SA_KEY:', err);
+
+      return {
+        serviceAccountId: parsed.service_account_id || parsed.serviceAccountId || '',
+        accessKeyId: parsed.id || parsed.accessKeyId || '',
+        iamEndpoint: parsed.iamEndpoint || 'iam.api.cloud.yandex.net:443',
+        privateKey: Buffer.from(privKeyStr),
+      };
+    } catch (err: any) {
+      console.error('Failed to parse YDB_SA_KEY:', err.message);
     }
   }
 
   const privKey = process.env.YDB_PRIVATE_KEY;
   if (privKey) {
     return {
-      accessKeyId: process.env.YDB_ACCESS_KEY_ID || "",
-      serviceAccountId: process.env.YDB_SERVICE_ACCOUNT_ID || "",
-      iamEndpoint: process.env.YDB_IAM_ENDPOINT || "iam.api.cloud.yandex.net:443",
-      privateKey: Buffer.from(privKey)
+      serviceAccountId: process.env.YDB_SERVICE_ACCOUNT_ID || '',
+      accessKeyId: process.env.YDB_ACCESS_KEY_ID || '',
+      iamEndpoint: process.env.YDB_IAM_ENDPOINT || 'iam.api.cloud.yandex.net:443',
+      privateKey: Buffer.from(privKey.replace(/\\n/g, '\n')),
     };
   }
 
-  // Fallback credentials for development if environment variables are not yet populated
+  // Fallback credentials for local dev
   return {
-    accessKeyId: process.env.YDB_ACCESS_KEY_ID || "ajej8vsdi4dt97luhctd",
-    serviceAccountId: process.env.YDB_SERVICE_ACCOUNT_ID || "aje30ei8425gdnnqjss3",
-    iamEndpoint: process.env.YDB_IAM_ENDPOINT || "iam.api.cloud.yandex.net:443",
+    serviceAccountId: 'ajeiklia1abr0r2hkj9l',
+    accessKeyId: 'ajenr8ku9h3c3m6c3ern',
+    iamEndpoint: 'iam.api.cloud.yandex.net:443',
     privateKey: Buffer.from(
-      "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQChw9aC8Cv/q8ln\nK82Qo8yPPkyrx1IdQwgPiIn6wFOm2mWfwARLbf3UlsQ4Xfv7Ri9CCqIPyiZFcr6d\niSyagOnwbxKWzzCS5brC+guCccMr4rUEZOXtdD3v9IaND+Y+ot4ji3OdZCLJgTvr\nJVdYpSEyuIaMt5CYhF9/eAkg8MxW6Hl4byY/jidV70RCnejpvds6Ec9ZHXOguPng\nGciGcqRrlIBTEJrRBc2yL7o1zePEaCtRiMrsLKhBpzZxcjCUskrMRB7khXtvKIRX\nyQI4ptkPjrjriiqXvxOQ06v5mIubNfrHCvkjShzMWR00QuB5pTxce8TJ0fGsChY+\niiIzX1XhAgMBAAECggEAMyF+rVaS4bZ/6595020i3GgZvfY7q0ojwx0qV9rw1f2U\nP6Fm+hyjLc4V6aczXaI6j8pinVENNchmHc9dDN0QlNHW81o8BUKd/MEiYDHrOfTn\nuKLX1m12omENIotTAJtkUaHjgm1DXaP+t33PFRLk4m5XASWIi9zTfqwHXqUeQZ2r\nEO8rAuKvuZyItNpglSCutv0XOHx4FX2HgLiyICUE9y41M6O3nh5jCPIKlpezk26a\nkAzAyS3PKRKHGi5kvElcClmZzkWBIHtLtgz6KWqiIXBb7QQEWKA5Vf2jZRKTcYp4\nij3p1zXypcsc3qgazHVHXESG2KThsFph0+9TpLfE3QKBgQDQVjDxZBnTJStAFxwq\nfIsTpixj2TJe2r1DYWlRZQVGk8+EyAcEYlkG3tcuHmVFxsVEbnr44AG2HqLanxBp\nIXbZiYFlsrRrsgFLUXwkjIQhLPV01neGyhAtX6LEJw0CrE6KhvO/w/zUhiuouVrd\nS1bRjSnc4PW+e9uBXAJ0oMN44wKBgQDGxgxHsMK1mBbfwgdRdUb/4r5tXvmk+CM4\n2757P3GHqRclwrZNdY7xLElwXTqX2NsrODwwwvZ7KnkOEVDsbgc5mmJ50sc+gKFB\n7jr39z0od6g9VIIU4qXj+jWyHgd+Wmi3b+Yi505yHBz8Viprc87PClgVZeQxDB6v\nzA+WF3ElawKBgQCrFgztPtICViS1ZgUIUux3P2B2wreds633Nnihkf8KHXouRYGV\ntRn9DWTSB74M1hXLg5rS5Eojf/cm57c3TnbmYAh2NpH5Wt27N3hmH0qmX+BWiYTw\nmOE+Eap9wL/rcQqyse5bjZwD/wa9cTHQRv1N6sn1DHxiaB4zlhaiJh9AFwKBgQCx\nWsZcNQgWFUTbk3kKInUeHcdBOQvQOSLcOZ1ExL/chm/D3m7gwDKxV42TN2vvTquH\nbZ6u91YLYUMv3R1yR14k9G5HOl1SlFzNwe1VkIE+GT3AsyV50xynRHoimg6fm7Vx\nbuNNY0soH5NxRsSEqYjuTNF5DjfD14eN3apOhk4LTwKBgH3EYRLsGJw9spRiVbC/\nEV/oFn/HHgD9vBDu19KfPS5Q4rtSMVtvHGwfiEAoz8XuzEaMr/nh+rTdarZxtZyF\nyggOTTr3jB8g7XbxRj3BC0qJ4Jde1qsRWYjrkXhlzGYkCSP0eJVL6k9hBlG1B8Nv\n9f8VqF0/K2PMXpparAfT2dsn\n-----END PRIVATE KEY-----\n"
-    )
+      '-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCcS3o+b0um91Pu\nOO2xWsAEi4sxk0vTiY7CJLxch3uCjFjjMSDWEvHOROaNFwrpWaaSL14ZjIBoaBLR\nqEejoxrK6/rsfn9y1q+pZDUvFCXt9mJEPwoEsuRv9Im8okVqTuzPXncrAl9+qa4b\nrKgzI21BMYU8kOljQEKEaDa3aYgtAXQW+K5p0WNBGcFhOqpyxwsK1C7bID/rbj4q\nymkLwmjshQkpu7z59FcepzjjA5XE7274d9HwB/sbyBM1u+UaaI7rphC+bVMTzcCw\ngzVQ80jSFrfoGnvvJvwGA4IW/YzwLT7zzec0UYsFwHuQJEuRpHV40PfVpyshyxQ+\njnwA15uJAgMBAAECggEAR9hyUyz6C8B5tnI44WQkDHLRA3MAUjdThm84nxgwcGxv\nl9BHleCTgwwtJwJGo8nwRha8HOZ3SIc+z12ZwOEDOfCMIhZsI7AIg8dqoz+Rx/eQ\naGrKAirx030Hq8y0OBAbz59PDFhE6Ya6YEJX91n7qRJIevTqNBOgABmfvWQnkvf1\n5prOwylA1OoTc7rwug+A3ytOUdA3Se4RoHU8BBbuQCESXSeVkrMKZLJKGJeq2TM2\n1sCMBKJ7veLNcFehvtZyT4bPdzLMUpzKeemQo7WfnB2ijSlKfsqub57TzJIYHfap\nToNXmZXvCsFWQIUW61zahmTXYtKojMd0YfbL3uOSOQKBgQC9Zgk+2LHfMusH5tNj\n5zIlHiT91LJaCQIlXE/7O8zmiYrhkhKsvpZE4pgq3vxS3MFSoRjAcQW4TlekbNfl\nu2Uadjrx2FldV5gJpieDeYF5QZUO7lJF51Z6H3tlm5DJwE7lfpNX0RqeAQ/AC3gU\nUps7PuQzv+f6QwxvSiryyTTsuwKBgQDTQWOjUVtOKXPF9E6pmi26lLK/c/5MLYem\naCRtxGCPS0ZFuR/jZVuL8KlzP8kqUwvDTaNmXEzZnZNqL6+eCP+sFZ+cV0OrdCyh\nWTdJPePSKr7AoFqt6iF2aL0kOFhpypHthyLifJNS6oxjVLe1mjNgcCUs2MRyoTAP\nnzt/G5kWiwKBgCFpI45jmZUfHVjqfjXsbesgUzQ31jKNzkQa8b0HApFUiBxcsVCp\n2kZSlrdRWL+hU7Uo1/3ysiieIVXPIZLUKPSvEJzjJniR4C8rkWLfB1kFma7lmbvd\nIGMwtIrrE3KTqxdO6d0e9QwUcdvV6hvjqqCb6pO6ccizFTl4ovTrS5vLAoGAQ/xg\nN3gAPVhDxOoJwrU2kDw4hjqrFRL1+8y6JIU1WggsllWseH7vBksuDUPy1mchevnq\nYw/DP6lhfqPYDbDxrwzKcAL5aR0bG9XdX/nF7qYI+27fn+agXD362MQ1V950Ng/u\nXxseQmnvQixKbuwwKpIMtLESD53mHLDu8coM618CgYARaQxQs7gZPxSIbw167hL3\n8qb+cwkg29wlCUgMZfFOsuXEoJhl1rTtTxC0ruQfRSVJ/G3XM4C4hUA1/BHta6TP\nWio1eSh9E5g85iTZJN74I5I73OZAfQ4XJ9mK/jazjFjs5M2Gv/dFTEcxO6kccTY4\n7S5DS7gR9NHQI8dCQ0G8FA==\n-----END PRIVATE KEY-----\n'
+    ),
   };
 }
 
-let ydbDriver: Driver | null = null;
-
 export async function getYdbDriver(): Promise<Driver> {
-  if (!ydbDriver) {
-    const authService = new IamAuthService(getSaKey() as any);
-    ydbDriver = new DriverClass({
-      endpoint: ENDPOINT,
-      database: DATABASE,
-      authService,
-    });
+  if (driver) {
+    return driver;
+  }
 
-    const ready = await ydbDriver.ready(5000);
-    if (!ready) {
-      console.error('YDB Driver failed to connect');
-    } else {
-      console.log('✅ Successfully connected to Yandex Database (YDB Serverless)!');
+  const saKey = parseServiceAccountKey();
+  const authService = new IamAuthService(saKey as any);
+
+  const cleanEndpoint = ENDPOINT.replace(/^(grpcs?|https?):\/\//, '').replace(/\/.*$/, '');
+  const isSecure = !ENDPOINT.startsWith('grpc://') && !ENDPOINT.startsWith('http://');
+  const dbPath = DATABASE.startsWith('/') ? DATABASE : `/${DATABASE}`;
+  const connectionString = `${isSecure ? 'grpcs' : 'grpc'}://${cleanEndpoint}${dbPath}`;
+
+  // FIX: The ydb-sdk has a known bug where it uses process.env.YDB_ENDPOINT directly
+  // inside endpoint.js for DNS resolution. If the user set YDB_ENDPOINT with /?database=
+  // this causes a grpc-js DNS parse error. We MUST sanitize the env variable here.
+  process.env.YDB_ENDPOINT = `${isSecure ? 'grpcs' : 'grpc'}://${cleanEndpoint}`;
+  console.log('[YDB] Using connection string:', connectionString);
+  console.log('[YDB] Sanitized process.env.YDB_ENDPOINT:', process.env.YDB_ENDPOINT);
+
+  driver = new DriverClass({
+    connectionString,
+    authService,
+    poolSettings: {
+      minLimit: 1,
+      maxLimit: 10,
+    },
+  });
+
+  const isReady = await driver.ready(5000);
+  if (!isReady) {
+    driver = null;
+    throw new Error('YDB Driver connection timeout (5000ms)');
+  }
+
+  if (!tablesInitialized) {
+    try {
+      await initTables(driver);
+      tablesInitialized = true;
+    } catch (e: any) {
+      console.warn('[YDB] initTables notice:', e.message);
     }
   }
-  return ydbDriver;
+
+  return driver;
 }
 
-// Helper to safely convert YDB Int64 (which ydb-sdk returns as Long/BigInt/object) to a JS number
+async function initTables(d: Driver) {
+  await d.tableClient.withSession(async (session: any) => {
+    // 1. Table users
+    try {
+      await session.createTable(
+        'users',
+        new TableDescription()
+          .withColumn(new Column('userId', Types.UTF8))
+          .withColumn(new Column('email', Types.optional(Types.UTF8)))
+          .withColumn(new Column('displayName', Types.optional(Types.UTF8)))
+          .withColumn(new Column('passwordHash', Types.optional(Types.UTF8)))
+          .withColumn(new Column('tokens', Types.INT64))
+          .withColumn(new Column('authType', Types.optional(Types.UTF8)))
+          .withColumn(new Column('createdAt', Types.UTF8))
+          .withPrimaryKey('userId')
+      );
+      console.log('✅ Created table `users` in YDB');
+    } catch (e: any) {
+      if (!e.message?.includes('already exists')) {
+        console.warn('Init table users notice:', e.message);
+      }
+    }
+
+    // 2. Table diagrams
+    try {
+      await session.createTable(
+        'diagrams',
+        new TableDescription()
+          .withColumn(new Column('userId', Types.UTF8))
+          .withColumn(new Column('id', Types.UTF8))
+          .withColumn(new Column('title', Types.optional(Types.UTF8)))
+          .withColumn(new Column('code', Types.optional(Types.UTF8)))
+          .withColumn(new Column('language', Types.optional(Types.UTF8)))
+          .withColumn(new Column('isPinned', Types.optional(Types.BOOL)))
+          .withColumn(new Column('createdAt', Types.UTF8))
+          .withColumn(new Column('updatedAt', Types.UTF8))
+          .withPrimaryKeys('userId', 'id')
+      );
+      console.log('✅ Created table `diagrams` in YDB');
+    } catch (e: any) {
+      if (!e.message?.includes('already exists')) {
+        console.warn('Init table diagrams notice:', e.message);
+      }
+    }
+  });
+}
+
 export function toJsNumber(val: any, fallback = 1): number {
   if (val === null || val === undefined) return fallback;
   if (typeof val === 'number') return isNaN(val) ? fallback : val;
@@ -85,10 +179,15 @@ export function toJsNumber(val: any, fallback = 1): number {
   return isNaN(p) ? fallback : p;
 }
 
+function hashPassword(password: string): string {
+  const salt = process.env.PASSWORD_SALT || 'schemator_super_secret_salt_2026';
+  return crypto.createHash('sha256').update(password + salt).digest('hex');
+}
+
 // User Helpers
 export async function getYdbUser(userId: string, email?: string) {
   const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session) => {
+  return await driver.tableClient.withSession(async (session: any) => {
     // 1. Try by userId
     const query = `
       DECLARE $userId AS Utf8;
@@ -98,7 +197,7 @@ export async function getYdbUser(userId: string, email?: string) {
     `;
     const preparedQuery = await session.prepareQuery(query);
     const { resultSets } = await session.executeQuery(preparedQuery, {
-      $userId: TypedValues.utf8(userId)
+      $userId: TypedValues.utf8(userId),
     });
 
     const rows = resultSets[0]?.rows;
@@ -108,7 +207,7 @@ export async function getYdbUser(userId: string, email?: string) {
       return obj;
     }
 
-    // 2. Fallback: Try by email if provided or if userId looks like an email
+    // 2. Fallback: Try by email if provided
     const cleanEmail = (email || (userId.includes('@') ? userId : '')).toLowerCase().trim();
     if (cleanEmail) {
       const emailQuery = `
@@ -119,7 +218,7 @@ export async function getYdbUser(userId: string, email?: string) {
       `;
       const prepEmail = await session.prepareQuery(emailQuery);
       const emailRes = await session.executeQuery(prepEmail, {
-        $email: TypedValues.utf8(cleanEmail)
+        $email: TypedValues.utf8(cleanEmail),
       });
       const eRows = emailRes.resultSets[0]?.rows;
       if (eRows && eRows.length > 0) {
@@ -135,7 +234,7 @@ export async function getYdbUser(userId: string, email?: string) {
 
 export async function upsertYdbUser(userId: string, email: string, displayName: string, hintTokens?: number) {
   const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session) => {
+  return await driver.tableClient.withSession(async (session: any) => {
     let tokensToKeep = typeof hintTokens === 'number' && !isNaN(hintTokens) && hintTokens > 0 ? hintTokens : 1;
     const cleanEmail = (email || '').toLowerCase().trim();
 
@@ -146,7 +245,7 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
     `;
     const prepCheckUser = await session.prepareQuery(checkUserQuery);
     const checkUserRes = await session.executeQuery(prepCheckUser, {
-      $userId: TypedValues.utf8(userId)
+      $userId: TypedValues.utf8(userId),
     });
     const userRows = checkUserRes.resultSets[0]?.rows;
     if (userRows && userRows.length > 0) {
@@ -155,7 +254,7 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
       if (t > tokensToKeep) tokensToKeep = t;
     }
 
-    // 2. Check existing tokens by email across all accounts for this email
+    // 2. Check existing tokens by email across all accounts
     if (cleanEmail) {
       const checkEmailQuery = `
         DECLARE $email AS Utf8;
@@ -163,7 +262,7 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
       `;
       const prepCheckEmail = await session.prepareQuery(checkEmailQuery);
       const checkEmailRes = await session.executeQuery(prepCheckEmail, {
-        $email: TypedValues.utf8(cleanEmail)
+        $email: TypedValues.utf8(cleanEmail),
       });
       const emailRows = checkEmailRes.resultSets[0]?.rows;
       if (emailRows && emailRows.length > 0) {
@@ -197,28 +296,13 @@ export async function upsertYdbUser(userId: string, email: string, displayName: 
       $createdAt: TypedValues.utf8(new Date().toISOString()),
     });
 
-    // 4. Update all accounts linked to this email to have at least tokensToKeep
-    if (cleanEmail) {
-      const updateOtherQuery = `
-        DECLARE $email AS Utf8;
-        DECLARE $tokens AS Int64;
-        UPDATE users SET tokens = $tokens WHERE email = $email;
-      `;
-      const prepUpdateOther = await session.prepareQuery(updateOtherQuery);
-      await session.executeQuery(prepUpdateOther, {
-        $email: TypedValues.utf8(cleanEmail),
-        $tokens: TypedValues.int64(tokensToKeep)
-      });
-    }
-
-    console.log(`[YDB] Saved user to Yandex Cloud YDB: userId=${userId}, email=${cleanEmail}, displayName=${displayName}, tokens=${tokensToKeep}`);
     return { tokens: tokensToKeep };
   });
 }
 
 export async function decrementYdbToken(userId: string): Promise<number> {
   const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session) => {
+  return await driver.tableClient.withSession(async (session: any) => {
     const user = await getYdbUser(userId);
     const currentTokens = user ? toJsNumber(user.tokens, 1) : 1;
     const newTokens = Math.max(0, currentTokens - 1);
@@ -231,16 +315,110 @@ export async function decrementYdbToken(userId: string): Promise<number> {
     const prep = await session.prepareQuery(updateQuery);
     await session.executeQuery(prep, {
       $userId: TypedValues.utf8(userId),
-      $tokens: TypedValues.int64(newTokens)
+      $tokens: TypedValues.int64(newTokens),
     });
 
     return newTokens;
   });
 }
 
+export async function registerYdbUser(email: string, pass: string, displayName: string) {
+  const driver = await getYdbDriver();
+  return await driver.tableClient.withSession(async (session: any) => {
+    const cleanEmail = email.toLowerCase().trim();
+    const userId = `email_${Buffer.from(cleanEmail).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
+
+    const checkQuery = `
+      DECLARE $userId AS Utf8;
+      SELECT userId, email FROM users WHERE userId = $userId;
+    `;
+    const prepCheck = await session.prepareQuery(checkQuery);
+    const checkRes = await session.executeQuery(prepCheck, {
+      $userId: TypedValues.utf8(userId),
+    });
+
+    const rows = checkRes.resultSets[0]?.rows;
+    if (rows && rows.length > 0) {
+      throw new Error('Пользователь с таким email уже зарегистрирован. Войдите.');
+    }
+
+    const passwordHash = hashPassword(pass);
+    const finalName = displayName.trim() || cleanEmail.split('@')[0];
+
+    const upsertQuery = `
+      DECLARE $userId AS Utf8;
+      DECLARE $email AS Utf8;
+      DECLARE $displayName AS Utf8;
+      DECLARE $tokens AS Int64;
+      DECLARE $createdAt AS Utf8;
+      DECLARE $passwordHash AS Utf8;
+      DECLARE $authType AS Utf8;
+
+      UPSERT INTO users (userId, email, displayName, tokens, createdAt, passwordHash, authType)
+      VALUES ($userId, $email, $displayName, $tokens, $createdAt, $passwordHash, $authType);
+    `;
+    const prepUpsert = await session.prepareQuery(upsertQuery);
+    await session.executeQuery(prepUpsert, {
+      $userId: TypedValues.utf8(userId),
+      $email: TypedValues.utf8(cleanEmail),
+      $displayName: TypedValues.utf8(finalName),
+      $tokens: TypedValues.int64(1),
+      $createdAt: TypedValues.utf8(new Date().toISOString()),
+      $passwordHash: TypedValues.utf8(passwordHash),
+      $authType: TypedValues.utf8('local'),
+    });
+
+    console.log(`[YDB] Registered new user in YDB: ${userId} (${cleanEmail})`);
+
+    return {
+      uid: userId,
+      email: cleanEmail,
+      displayName: finalName,
+      tokens: 1,
+    };
+  });
+}
+
+export async function loginYdbUser(email: string, pass: string) {
+  const driver = await getYdbDriver();
+  return await driver.tableClient.withSession(async (session: any) => {
+    const cleanEmail = email.toLowerCase().trim();
+    const userId = `email_${Buffer.from(cleanEmail).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
+
+    const query = `
+      DECLARE $userId AS Utf8;
+      SELECT userId, email, displayName, tokens, passwordHash FROM users WHERE userId = $userId;
+    `;
+    const prep = await session.prepareQuery(query);
+    const res = await session.executeQuery(prep, {
+      $userId: TypedValues.utf8(userId),
+    });
+
+    const rows = res.resultSets[0]?.rows;
+    if (!rows || rows.length === 0) {
+      throw new Error('Пользователь не найден. Пожалуйста, пройдите регистрацию.');
+    }
+
+    const userObj = TypedData.createNativeObjects(res.resultSets[0])[0];
+    const inputHash = hashPassword(pass);
+    const legacyHash = Buffer.from(pass).toString('base64');
+
+    if (userObj.passwordHash && String(userObj.passwordHash) !== inputHash && String(userObj.passwordHash) !== legacyHash) {
+      throw new Error('Неверный пароль.');
+    }
+
+    return {
+      uid: String(userObj.userId),
+      email: String(userObj.email || cleanEmail),
+      displayName: String(userObj.displayName || cleanEmail.split('@')[0]),
+      tokens: toJsNumber(userObj.tokens, 1),
+    };
+  });
+}
+
 export async function getYdbDiagrams(userId: string) {
   const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session) => {
+  return await driver.tableClient.withSession(async (session: any) => {
     const query = `
       DECLARE $userId AS Utf8;
       SELECT id, title, code, language, isPinned, createdAt, updatedAt
@@ -249,7 +427,7 @@ export async function getYdbDiagrams(userId: string) {
     `;
     const prep = await session.prepareQuery(query);
     const res = await session.executeQuery(prep, {
-      $userId: TypedValues.utf8(userId)
+      $userId: TypedValues.utf8(userId),
     });
 
     const rows = res.resultSets[0]?.rows || [];
@@ -267,7 +445,7 @@ export async function getYdbDiagrams(userId: string) {
 
 export async function saveYdbDiagram(userId: string, diagram: any) {
   const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session) => {
+  return await driver.tableClient.withSession(async (session: any) => {
     const query = `
       DECLARE $userId AS Utf8;
       DECLARE $id AS Utf8;
@@ -295,100 +473,9 @@ export async function saveYdbDiagram(userId: string, diagram: any) {
   });
 }
 
-export async function registerYdbUser(email: string, pass: string, displayName: string) {
-  const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session) => {
-    const checkQuery = `
-      DECLARE $userId AS Utf8;
-      SELECT userId, email, displayName FROM users WHERE userId = $userId;
-    `;
-    const cleanEmail = email.toLowerCase().trim();
-    const userId = `email_${Buffer.from(cleanEmail).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
-    
-    const prepCheck = await session.prepareQuery(checkQuery);
-    const checkRes = await session.executeQuery(prepCheck, {
-      $userId: TypedValues.utf8(userId)
-    });
-
-    const rows = checkRes.resultSets[0]?.rows;
-    if (rows && rows.length > 0) {
-      throw new Error('Пользователь с таким email уже зарегистрирован.');
-    }
-
-    const passwordHash = Buffer.from(pass).toString('base64');
-    const finalName = displayName.trim() || cleanEmail.split('@')[0];
-
-    const upsertQuery = `
-      DECLARE $userId AS Utf8;
-      DECLARE $email AS Utf8;
-      DECLARE $displayName AS Utf8;
-      DECLARE $tokens AS Int64;
-      DECLARE $createdAt AS Utf8;
-      DECLARE $passwordHash AS Utf8;
-
-      UPSERT INTO users (userId, email, displayName, tokens, createdAt, passwordHash)
-      VALUES ($userId, $email, $displayName, $tokens, $createdAt, $passwordHash);
-    `;
-    const prepUpsert = await session.prepareQuery(upsertQuery);
-    await session.executeQuery(prepUpsert, {
-      $userId: TypedValues.utf8(userId),
-      $email: TypedValues.utf8(cleanEmail),
-      $displayName: TypedValues.utf8(finalName),
-      $tokens: TypedValues.int64(1),
-      $createdAt: TypedValues.utf8(new Date().toISOString()),
-      $passwordHash: TypedValues.utf8(passwordHash),
-    });
-
-    console.log(`[YDB] Registered new user in YDB: ${userId} (${cleanEmail})`);
-
-    return {
-      uid: userId,
-      email: cleanEmail,
-      displayName: finalName,
-      tokens: 1
-    };
-  });
-}
-
-export async function loginYdbUser(email: string, pass: string) {
-  const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session) => {
-    const cleanEmail = email.toLowerCase().trim();
-    const userId = `email_${Buffer.from(cleanEmail).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
-
-    const query = `
-      DECLARE $userId AS Utf8;
-      SELECT userId, email, displayName, tokens, passwordHash FROM users WHERE userId = $userId;
-    `;
-    const prep = await session.prepareQuery(query);
-    const res = await session.executeQuery(prep, {
-      $userId: TypedValues.utf8(userId)
-    });
-
-    const rows = res.resultSets[0]?.rows;
-    if (!rows || rows.length === 0) {
-      throw new Error('Пользователь с таким email не найден. Пройдите регистрацию.');
-    }
-
-    const userObj = TypedData.createNativeObjects(res.resultSets[0])[0];
-    const expectedHash = Buffer.from(pass).toString('base64');
-    
-    if (userObj.passwordHash && String(userObj.passwordHash) !== expectedHash) {
-      throw new Error('Неверный пароль.');
-    }
-
-    return {
-      uid: String(userObj.userId),
-      email: String(userObj.email || cleanEmail),
-      displayName: String(userObj.displayName || cleanEmail.split('@')[0]),
-      tokens: toJsNumber(userObj.tokens, 1)
-    };
-  });
-}
-
 export async function deleteYdbDiagram(userId: string, diagramId: string) {
   const driver = await getYdbDriver();
-  return await driver.tableClient.withSession(async (session) => {
+  return await driver.tableClient.withSession(async (session: any) => {
     const query = `
       DECLARE $userId AS Utf8;
       DECLARE $id AS Utf8;
@@ -402,4 +489,3 @@ export async function deleteYdbDiagram(userId: string, diagramId: string) {
     return { success: true };
   });
 }
-

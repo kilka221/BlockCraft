@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { 
   getYdbUser, 
   upsertYdbUser, 
@@ -13,10 +12,20 @@ import {
   deleteYdbDiagram
 } from './src/server/ydb';
 
+process.on('unhandledRejection', (reason) => {
+  console.warn('[YDB/Server Warning] Unhandled Rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.warn('[YDB/Server Warning] Uncaught Exception:', err);
+});
+
 const app = express();
 const PORT = 3000;
 
-app.use(cors());
+app.use(cors({
+  origin: ['https://schemator.ru', 'http://localhost:5173', 'http://localhost:3000'],
+  credentials: true,
+}));
 app.use(express.json());
 
 // API Router
@@ -30,11 +39,11 @@ apiRouter.get('/health', (req, res) => {
 // Direct Auth API (YDB Serverless)
 apiRouter.post('/auth/register', async (req, res) => {
   try {
-    const { email, password, displayName } = req.body;
+    const { email, password, displayName, name } = req.body;
     if (!email || !password) {
       return res.status(400).json({ success: false, error: 'Email и пароль обязательны' });
     }
-    const user = await registerYdbUser(email, password, displayName || '');
+    const user = await registerYdbUser(email, password, displayName || name || '');
     res.json({ success: true, user });
   } catch (e: any) {
     console.error('YDB Auth Register error:', e);
@@ -118,9 +127,12 @@ apiRouter.get('/users/:uid', async (req, res) => {
 
 apiRouter.post('/users/sync', async (req, res) => {
   try {
-    const { uid, email, displayName, tokens } = req.body;
+    const uid = req.body.uid || req.body.id;
+    const email = req.body.email || '';
+    const displayName = req.body.displayName || req.body.name || '';
+    const tokens = req.body.tokens;
     if (!uid) return res.status(400).json({ success: false, error: 'uid is required' });
-    const result = await upsertYdbUser(uid, email || '', displayName || '', tokens);
+    const result = await upsertYdbUser(uid, email, displayName, tokens);
     res.json({ success: true, result });
   } catch (e: any) {
     console.error('YDB syncUser error:', e);
@@ -130,12 +142,24 @@ apiRouter.post('/users/sync', async (req, res) => {
 
 apiRouter.post('/users/decrement-token', async (req, res) => {
   try {
-    const { uid } = req.body;
+    const uid = req.body.uid || req.body.id;
     if (!uid) return res.status(400).json({ success: false, error: 'uid is required' });
     const newBalance = await decrementYdbToken(uid);
     res.json({ success: true, tokens: newBalance });
   } catch (e: any) {
     console.error('YDB decrementToken error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+apiRouter.post('/tokens/spend', async (req, res) => {
+  try {
+    const uid = req.body.uid || req.body.id;
+    if (!uid) return res.status(400).json({ success: false, error: 'uid is required' });
+    const newBalance = await decrementYdbToken(uid);
+    res.json({ success: true, tokens: newBalance });
+  } catch (e: any) {
+    console.error('YDB spendToken error:', e);
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -154,7 +178,8 @@ apiRouter.get('/diagrams/:uid', async (req, res) => {
 
 apiRouter.post('/diagrams/save', async (req, res) => {
   try {
-    const { uid, diagram } = req.body;
+    const uid = req.body.uid || req.body.id;
+    const diagram = req.body.diagram;
     if (!uid || !diagram) return res.status(400).json({ success: false, error: 'uid and diagram are required' });
     const result = await saveYdbDiagram(uid, diagram);
     res.json({ success: true, result });
@@ -166,7 +191,8 @@ apiRouter.post('/diagrams/save', async (req, res) => {
 
 apiRouter.post('/diagrams/delete', async (req, res) => {
   try {
-    const { uid, diagramId } = req.body;
+    const uid = req.body.uid || req.body.id;
+    const diagramId = req.body.diagramId || req.body.id;
     if (!uid || !diagramId) return res.status(400).json({ success: false, error: 'uid and diagramId are required' });
     const result = await deleteYdbDiagram(uid, diagramId);
     res.json({ success: true, result });
@@ -188,7 +214,8 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 
 async function startServer() {
   // Vite middleware in dev mode
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
